@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#050506" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta
+      name="description"
+      content="Browser-only generative particle art tool driven by client-side depth estimation."
+    />
+    <title>Drift — Generative Particle Depth Canvas</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&family=Noto+Serif+TC:wght@300;400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 3D WebGL / Particle Canvas Layer -->
+      <div id="canvas-container" class="layer canvas-layer">
+        <canvas id="particle-canvas"></canvas>
+      </div>
+
+      <!-- 2D HUD / Overlays Canvas Layer -->
+      <div id="overlay-container" class="layer overlay-layer">
+        <canvas id="overlay-canvas"></canvas>
+      </div>
+
+      <!-- Semantic UI Layer (Floating controls, HUD, drawer, modals) -->
+      <div id="ui-layer" class="layer ui-layer">
+        <header id="app-header" class="app-header"></header>
+        <main id="app-main" class="app-main"></main>
+        <aside id="app-drawer" class="app-drawer"></aside>
+        <footer id="app-footer" class="app-footer"></footer>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
