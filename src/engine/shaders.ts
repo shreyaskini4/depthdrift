@@ -133,20 +133,24 @@ float lifeFade(float ph, float fadeIn, float fadeOutStart) {
   return smoothstep(0.0, fadeIn, ph) * (1.0 - smoothstep(fadeOutStart, 1.0, ph));
 }
 
-// DRIFT: ~45% of particles lift off the image, flow away on a wind with
-// curl turbulence, fade out, and fade back in at home. The rest stay put.
+// DRIFT: spatially coherent dissolve front, reversible, no teleporting.
+// As cover breathes/shrinks, particles drift back and re-form.
 vec3 computeDrift(vec3 p, float seed, float sal, float t) {
   gFade = 1.0;
-  vec3 idle = curlNoise(vec3(p.xy * uNoiseFrequency, t * 0.2 + seed * 5.0)) * 0.012;
-  if (gSeed2 > 0.45) return idle;
-  float ph = fract(t * (0.04 + uNoiseSpeed * 0.10) + seed);
-  float travel = pow(ph, 1.4);
-  float reach = (0.5 + uNoiseStrength * 0.9) * (1.0 - 0.4 * sal);
-  vec3 wind = vec3(0.9, 0.28, 0.22);
-  vec3 turb = curlNoise(vec3(p.xy * uNoiseFrequency + wind.xy * travel * 0.6,
-                             t * 0.18 + gSeed2 * 4.0));
-  gFade = lifeFade(ph, 0.08, 0.35);
-  return (wind + turb * 0.8) * travel * reach + idle;
+  vec3 idle = curlNoise(vec3(p.xy * uNoiseFrequency, t * 0.2 + seed * 5.0)) * 0.006;
+  vec2 axis = normalize(vec2(1.0, 0.22));          // wind direction
+  float s = clamp(dot(p.xy, axis) / 2.0 + 0.5, 0.0, 1.0);
+  // fraction of the image (from the downwind side) that is dissolving,
+  // breathing slowly between 15% and 55%, starting at 15% at session start
+  float cover = 0.15 + 0.40 * (0.5 - 0.5 * cos(t * (0.08 + uNoiseSpeed * 0.12)));
+  float a = clamp((s + (gSeed2 - 0.5) * 0.35 - (1.0 - cover)) / 0.3, 0.0, 1.0);
+  float travel = a * a * (3.0 - 2.0 * a);
+  float reach = (0.35 + uNoiseStrength * 0.9) * (1.0 - 0.35 * sal) * (0.6 + 0.8 * seed);
+  vec3 wind = vec3(axis, 0.25);
+  vec3 turb = curlNoise(vec3(p.xy * uNoiseFrequency + axis * travel * 0.5,
+                             t * 0.2 + gSeed2 * 4.0));
+  gFade = 1.0 - smoothstep(0.6, 1.0, a);
+  return (wind + turb * 0.7) * travel * reach + idle;
 }
 
 // SPLASH: event-driven shockwave from uBurst. Each particle is kicked
@@ -304,18 +308,17 @@ void main() {
   gl_Position = projectionMatrix * mvPosition;
 
   // Adaptive Point Size with distance attenuation and DPI scaling
-  float pSize = uPointSize * uPixelRatio * (0.85 + sal * 0.6);
+  float pSize = uPointSize * uPixelRatio * (0.8 + sal * 0.5);
   float viewDepth = max(0.15, -mvPosition.z);
-  gl_PointSize = max(1.5 * uPixelRatio, clamp(pSize * (2.2 / viewDepth), 1.5 * uPixelRatio, 80.0 * uPixelRatio));
+  gl_PointSize = clamp(pSize * (2.0 / viewDepth),
+                       1.0 * uPixelRatio, 24.0 * uPixelRatio);
 
   // Color Mode processing
   if (uColorMode == 0) {
-    // TRUE: Source image RGB with enhanced chroma to retain vivid color and definition under additive accumulation
-    float luma = dot(baseColor, vec3(0.299, 0.587, 0.114));
-    vec3 saturated = mix(vec3(luma), baseColor, 1.15);
-    vColor = max(vec3(0.04), clamp(saturated, 0.0, 1.0));
-    // Reduced additive particle opacity: prevents excessive white burn / blowout across dense clusters
-    vAlpha = 0.42;
+    // TRUE: Crisp stipple print look without artificial luminance floor
+    vec3 c = clamp((baseColor - 0.04) * 1.12, 0.0, 1.0);
+    vColor = c;
+    vAlpha = 0.9;
   } else if (uColorMode == 1) {
     // NEGATIVE: Inverted colors with tuned contrast floor so inverted dark/neon tones stay saturated without wash-out
     vec3 inverted = vec3(1.0) - baseColor;
@@ -368,8 +371,8 @@ void main() {
     return;
   }
 
-  // Crisp yet smooth circular falloff from center to edge to avoid harsh additive overlap hotspots
-  float edgeAlpha = smoothstep(0.5, 0.05, dist);
+  // Crisp circular edge with subtle subpixel anti-aliasing
+  float edgeAlpha = 1.0 - smoothstep(0.42, 0.5, dist);
   float alpha = vAlpha * edgeAlpha;
 
   gl_FragColor = vec4(vColor, alpha);

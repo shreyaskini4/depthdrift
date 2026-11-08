@@ -119,8 +119,8 @@ export class SettingsDrawer {
             <input 
               type="range" 
               id="slider-point-size" 
-              min="1.0" 
-              max="6.0" 
+              min="0.8" 
+              max="3.0" 
               step="0.1" 
               value="${s.pointSize}" 
               class="range-slider"
@@ -136,8 +136,8 @@ export class SettingsDrawer {
             <input 
               type="range" 
               id="slider-depth-scale" 
-              min="0.2" 
-              max="3.0" 
+              min="0.0" 
+              max="1.0" 
               step="0.05" 
               value="${s.depthScale}" 
               class="range-slider"

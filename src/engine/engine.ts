@@ -91,8 +91,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   private lastPixels: HTMLCanvasElement | ImageBitmap | ImageData | null = null;
   private lastDepth: DepthResult | null = null;
   private imageAspect: number = 1.0;
-  private cameraDistance: number = 2.0;
-  private baseCamZ: number = 2.0;
+  private baseCamZ = 2.0;
   private travelBlend: number = 0;
 
   // Render timing & caching
@@ -110,9 +109,9 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Default settings
     this.settings = {
-      particleCount: initialSettings?.particleCount ?? 120_000,
-      pointSize: initialSettings?.pointSize ?? 2.0,
-      depthScale: initialSettings?.depthScale ?? 0.4,
+      particleCount: initialSettings?.particleCount ?? 200_000,
+      pointSize: initialSettings?.pointSize ?? 1.3,
+      depthScale: initialSettings?.depthScale ?? 0.3,
       noiseSpeed: initialSettings?.noiseSpeed ?? 0.6,
       noiseFrequency: initialSettings?.noiseFrequency ?? 1.2,
       noiseStrength: initialSettings?.noiseStrength ?? 0.8,
@@ -160,7 +159,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 50);
-    this.updateCameraDistance();
+    this.fitCamera();
     this.camera.lookAt(0, 0, 0);
 
     // Scene
@@ -240,25 +239,14 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.updateClearColor(this.settings.colorMode);
   }
 
-  /**
-   * Computes camera distance dynamically so that the image fills ~85% of the viewport
-   * for ANY image aspect ratio and ANY viewport aspect ratio.
-   * Vertical FOV is 50 degrees.
-   */
-  private updateCameraDistance(): void {
+  private fitCamera(): void {
     if (!this.camera) return;
-    const fovRad = (this.camera.fov * Math.PI) / 180;
-    const halfFovTan = Math.tan(fovRad / 2);
-    const viewportAspect = Math.max(0.001, (this.width || 800) / Math.max(1, this.height || 600));
-    const targetCoverage = 0.85;
-
-    // Image height in particle coordinate space is 1.0 and image width is this.imageAspect
-    const imgAspect = Math.max(0.001, this.imageAspect || 1.0);
-    const distForHeight = 1.0 / (2 * halfFovTan * targetCoverage);
-    const distForWidth = imgAspect / (2 * halfFovTan * viewportAspect * targetCoverage);
-
-    this.cameraDistance = Math.max(distForHeight, distForWidth);
-    this.baseCamZ = this.cameraDistance;
+    const t = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const viewAspect = this.width / this.height;
+    const fill = 0.82; // leaves room for the dock
+    const distH = 0.5 / (t * fill);
+    const distW = (0.5 * this.imageAspect) / (t * viewAspect * fill);
+    this.baseCamZ = Math.max(distH, distW);
     this.camera.position.z = this.baseCamZ;
   }
 
@@ -358,7 +346,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     if (data.aspect) {
       this.imageAspect = data.aspect;
-      this.updateCameraDistance();
+      this.fitCamera();
     }
 
     this.baseTrackers = data.trackers;
@@ -390,7 +378,7 @@ export class ThreeParticleEngine implements ParticleEngine {
         : (options?.count ?? options?.targetCount ?? this.settings.particleCount);
     const sampled = sampleImageAndDepth(pixels, depth, targetCount);
     this.imageAspect = sampled.aspect || (pixels.width / Math.max(1, pixels.height)) || 1.0;
-    this.updateCameraDistance();
+    this.fitCamera();
     this.applySampledData(sampled, true);
   }
 
@@ -510,10 +498,11 @@ export class ThreeParticleEngine implements ParticleEngine {
     const ndcX = (x / Math.max(1, this.width)) * 2 - 1;
     const ndcY = -(y / Math.max(1, this.height)) * 2 + 1;
 
-    // Raycast to Z=0 plane
+    // Raycast to Z=0 plane using live camera position and projection
+    this.camera.updateMatrixWorld();
     this.tempVec.set(ndcX, ndcY, 0.5).unproject(this.camera);
     const dir = this.tempVec.sub(this.camera.position).normalize();
-    const distance = -this.camera.position.z / dir.z;
+    const distance = Math.abs(dir.z) > 1e-6 ? -this.camera.position.z / dir.z : 0;
     const worldX = this.camera.position.x + dir.x * distance;
     const worldY = this.camera.position.y + dir.y * distance;
 
@@ -549,9 +538,10 @@ export class ThreeParticleEngine implements ParticleEngine {
     const ndcX = (last.x / Math.max(1, this.width)) * 2 - 1;
     const ndcY = -(last.y / Math.max(1, this.height)) * 2 + 1;
 
+    this.camera.updateMatrixWorld();
     this.tempVec.set(ndcX, ndcY, 0.5).unproject(this.camera);
     const dir = this.tempVec.sub(this.camera.position).normalize();
-    const dist = -this.camera.position.z / dir.z;
+    const dist = Math.abs(dir.z) > 1e-6 ? -this.camera.position.z / dir.z : 0;
     const wx = this.camera.position.x + dir.x * dist;
     const wy = this.camera.position.y + dir.y * dist;
 
@@ -580,7 +570,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
 
-    this.updateCameraDistance();
+    this.fitCamera();
 
     this.material.uniforms.uPixelRatio.value = targetDpr;
   }

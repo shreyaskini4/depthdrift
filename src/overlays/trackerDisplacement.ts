@@ -189,7 +189,7 @@ export function curlNoise(x: number, y: number, z: number): [number, number, num
 // --- Mode Displacement Functions (Matching PARTICLE_VERTEX_SHADER in shaders.ts) ---
 
 /**
- * Mode 0: DRIFT - organic floating turbulence
+ * Mode 0: DRIFT - spatially coherent dissolve front, reversible, no teleporting.
  */
 export function computeDrift(
   p: [number, number, number],
@@ -198,16 +198,39 @@ export function computeDrift(
   t: number,
   noiseFrequency: number,
   noiseSpeed: number,
-  noiseStrength: number
+  noiseStrength: number,
+  seed2 = 0.5
 ): [number, number, number] {
-  const npX = p[0] * noiseFrequency + seed * 2.5;
-  const npY = p[1] * noiseFrequency + t * noiseSpeed * 0.4;
-  const npZ = p[2] * noiseFrequency + seed * 1.5;
-  const curl = curlNoise(npX, npY, npZ);
-  const zFloat = Math.sin(t * noiseSpeed * 1.5 + p[0] * 4.0 + p[1] * 3.0 + seed * 6.28) * 0.05;
-  const salFactor = 1.0 + (1.0 - sal) * 0.7;
-  const scale = noiseStrength * 0.15 * salFactor;
-  return [curl[0] * scale, curl[1] * scale, curl[2] * scale + zFloat];
+  const idleCurl = curlNoise(p[0] * noiseFrequency, p[1] * noiseFrequency, t * 0.2 + seed * 5.0);
+  const idle: [number, number, number] = [idleCurl[0] * 0.006, idleCurl[1] * 0.006, idleCurl[2] * 0.006];
+
+  const axisLen = Math.hypot(1.0, 0.22);
+  const axisX = 1.0 / axisLen;
+  const axisY = 0.22 / axisLen;
+
+  const dotVal = p[0] * axisX + p[1] * axisY;
+  const s = Math.max(0.0, Math.min(1.0, dotVal / 2.0 + 0.5));
+  // fraction of the image dissolving: 15%..55%, starting at 15% at session start
+  const cover = 0.15 + 0.40 * (0.5 - 0.5 * Math.cos(t * (0.08 + noiseSpeed * 0.12)));
+  const a = Math.max(0.0, Math.min(1.0, (s + (seed2 - 0.5) * 0.35 - (1.0 - cover)) / 0.3));
+  const travel = a * a * (3.0 - 2.0 * a);
+  const reach = (0.35 + noiseStrength * 0.9) * (1.0 - 0.35 * sal) * (0.6 + 0.8 * seed);
+
+  const windX = axisX;
+  const windY = axisY;
+  const windZ = 0.25;
+
+  const turbCurl = curlNoise(
+    p[0] * noiseFrequency + axisX * travel * 0.5,
+    p[1] * noiseFrequency + axisY * travel * 0.5,
+    t * 0.2 + seed2 * 4.0
+  );
+
+  return [
+    (windX + turbCurl[0] * 0.7) * travel * reach + idle[0],
+    (windY + turbCurl[1] * 0.7) * travel * reach + idle[1],
+    (windZ + turbCurl[2] * 0.7) * travel * reach + idle[2],
+  ];
 }
 
 /**

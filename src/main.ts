@@ -20,9 +20,9 @@ import type {
 import { UIManager } from './ui';
 
 export const DEFAULT_SETTINGS: ParticleSettings = {
-  particleCount: 120_000,
-  pointSize: 2.0,
-  depthScale: 0.4,
+  particleCount: 200_000,
+  pointSize: 1.3,
+  depthScale: 0.3,
   noiseSpeed: 0.6,
   noiseFrequency: 1.2,
   noiseStrength: 0.8,

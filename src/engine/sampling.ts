@@ -248,8 +248,8 @@ export function sampleImageAndDepth(
   const imgBytes = imgData.data;
 
   // Analysis grid dimensions (downscaled for fast salience computation)
-  const gridW = Math.min(256, imgWidth);
-  const gridH = Math.min(256, imgHeight);
+  const gridW = Math.min(512, imgWidth);
+  const gridH = Math.min(512, imgHeight);
   const totalCells = gridW * gridH;
 
   const luminanceGrid = new Float32Array(totalCells);
@@ -281,7 +281,7 @@ export function sampleImageAndDepth(
 
   // 2. Compute edge gradients and salience
   const cdf = new Float64Array(totalCells);
-  let cumulativeSalience = 0;
+  let cumulativeWeight = 0;
 
   for (let gy = 0; gy < gridH; gy++) {
     const ym1 = Math.max(0, gy - 1) * gridW;
@@ -309,8 +309,9 @@ export function sampleImageAndDepth(
       const cellIdx = yRow + gx;
       salienceGrid[cellIdx] = sal;
 
-      cumulativeSalience += sal;
-      cdf[cellIdx] = cumulativeSalience;
+      const w = 0.05 + 0.5 * Math.pow(luma, 1.4) + 0.45 * Math.max(lumaGrad, depthGrad * 0.6);
+      cumulativeWeight += w;
+      cdf[cellIdx] = cumulativeWeight;
     }
   }
 
@@ -471,8 +472,8 @@ export function sampleImageAndDepth(
   const saliences = new Float32Array(count);
   const depths = new Float32Array(count);
 
-  // 60% uniform stratified jittered points, 40% importance sampled points
-  const uniformCount = Math.floor(count * 0.6);
+  // 20% uniform stratified jittered points, 80% importance sampled points
+  const uniformCount = Math.floor(count * 0.2);
   const importanceCount = count - uniformCount;
 
   const uCols = Math.round(Math.sqrt(uniformCount * aspect));
@@ -522,9 +523,9 @@ export function sampleImageAndDepth(
     }
   }
 
-  // B. Importance sampling based on salience CDF
+  // B. Importance sampling based on tone & edge CDF
   for (let i = 0; i < importanceCount && p < count; i++) {
-    const targetVal = Math.random() * cumulativeSalience;
+    const targetVal = Math.random() * cumulativeWeight;
 
     // Binary search on CDF
     let low = 0;

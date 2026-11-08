@@ -35,11 +35,11 @@ export interface OverlaySettings {
 }
 
 export interface ParticleSettings {
-  /** Target particle count between 50,000 and 200,000 */
+  /** Target particle count between 50,000 and 200,000 (default: 200,000) */
   particleCount: number;
-  /** Point rendering size in physical pixels */
+  /** Point rendering size in physical pixels (default: 1.3) */
   pointSize: number;
-  /** Max depth extrusion along Z axis (default: 0.4) */
+  /** Max depth extrusion along Z axis (default: 0.3) */
   depthScale: number;
   /** Turbulence / noise animation speed */
   noiseSpeed: number;
