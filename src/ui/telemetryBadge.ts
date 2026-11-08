@@ -1,7 +1,8 @@
 /**
- * Live Telemetry Badge for Drift
- * Displays real-time FPS, Canvas Resolution, and DPR/Particle metrics in a dedicated non-overlapping pill.
- * Throttled to ~250ms to prevent visual jitter and layout thrashing while reflecting actual frame performance.
+ * Live Debug Telemetry Readout for Drift
+ * Displays compact real-time FPS, Canvas Resolution, Point Count, DPR, and Execution Provider (WebGPU/WASM/Heuristic).
+ * Positioned in the bottom-left corner and visible ONLY when URL contains `?debug` or debug toggle is active.
+ * Throttled to ~250ms to prevent visual jitter and layout thrashing.
  */
 
 export interface TelemetryData {
@@ -10,6 +11,7 @@ export interface TelemetryData {
   height: number;
   particleCount?: number;
   dpr?: number;
+  provider?: string;
 }
 
 export class TelemetryBadge {
@@ -21,19 +23,70 @@ export class TelemetryBadge {
   private resEl: HTMLElement | null = null;
   private dotEl: HTMLElement | null = null;
   private ptsEl: HTMLElement | null = null;
+  private dprEl: HTMLElement | null = null;
+  private providerEl: HTMLElement | null = null;
 
   private currentFps: number = 60;
   private currentWidth: number = 0;
   private currentHeight: number = 0;
-  private currentPts: number = 0;
+  private currentPts: number = 450000;
+  private currentDpr: number = 1.0;
+  private currentProvider: 'WebGPU' | 'WASM' | 'Heuristic' = 'WebGPU';
+  private isDebugMode: boolean = false;
 
   constructor(parent: HTMLElement) {
     this.container = document.createElement('div');
-    this.container.className = 'telemetry-badge glassmorphic-panel';
+    this.container.className = 'telemetry-badge glassmorphic-panel debug-readout';
     this.container.setAttribute('role', 'status');
-    this.container.setAttribute('aria-label', 'Realtime System Telemetry');
+    this.container.setAttribute('aria-label', 'System Debug Telemetry Readout');
+
+    // Auto-detect default provider capability
+    if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+      this.currentProvider = 'WebGPU';
+    } else {
+      this.currentProvider = 'WASM';
+    }
+
+    if (typeof window !== 'undefined' && window.devicePixelRatio) {
+      this.currentDpr = Math.min(window.devicePixelRatio, 3.0);
+    }
+
     this.render();
     parent.appendChild(this.container);
+
+    // Initial visibility check against URL '?debug' and debug flag
+    this.updateVisibility();
+  }
+
+  public isDebugActive(): boolean {
+    const urlHasDebug =
+      typeof window !== 'undefined' &&
+      window.location.search.toLowerCase().includes('debug');
+    return urlHasDebug || this.isDebugMode;
+  }
+
+  public setDebug(debug: boolean): void {
+    this.isDebugMode = debug;
+    this.updateVisibility();
+  }
+
+  public setProvider(provider: string): void {
+    const p = provider.toLowerCase();
+    if (p.includes('webgpu')) {
+      this.currentProvider = 'WebGPU';
+    } else if (p.includes('wasm')) {
+      this.currentProvider = 'WASM';
+    } else {
+      this.currentProvider = 'Heuristic';
+    }
+    if (this.providerEl) {
+      this.providerEl.textContent = this.currentProvider;
+    }
+  }
+
+  public updateVisibility(): void {
+    const active = this.isDebugActive();
+    this.container.style.display = active ? 'block' : 'none';
   }
 
   public update(data: TelemetryData): void {
@@ -44,6 +97,15 @@ export class TelemetryBadge {
     if (data.particleCount !== undefined) {
       this.currentPts = data.particleCount;
     }
+    if (data.dpr !== undefined) {
+      this.currentDpr = data.dpr;
+    }
+    if (data.provider !== undefined) {
+      this.setProvider(data.provider);
+    }
+
+    // Always recheck visibility in case URL or state changed
+    this.updateVisibility();
 
     // Throttle DOM mutations to ~250ms to prevent visual jitter
     if (now - this.lastUpdateTime < this.updateIntervalMs) {
@@ -54,6 +116,11 @@ export class TelemetryBadge {
   }
 
   private applyDomUpdate(): void {
+    if (!this.isDebugActive()) {
+      this.container.style.display = 'none';
+      return;
+    }
+
     if (!this.fpsEl || !this.resEl) return;
 
     const fpsRound = Math.round(this.currentFps);
@@ -74,13 +141,16 @@ export class TelemetryBadge {
     this.resEl.textContent = `${this.currentWidth}×${this.currentHeight}`;
 
     if (this.ptsEl) {
-      if (this.currentPts > 0) {
-        const kPts = Math.round(this.currentPts / 1000);
-        this.ptsEl.textContent = `${kPts}K PTS`;
-        this.ptsEl.style.display = 'inline';
-      } else {
-        this.ptsEl.style.display = 'none';
-      }
+      const kPts = Math.round(this.currentPts / 1000);
+      this.ptsEl.textContent = `${kPts}k pts`;
+    }
+
+    if (this.dprEl) {
+      this.dprEl.textContent = `${this.currentDpr.toFixed(1)}x DPR`;
+    }
+
+    if (this.providerEl) {
+      this.providerEl.textContent = this.currentProvider;
     }
   }
 
@@ -89,10 +159,14 @@ export class TelemetryBadge {
       <div class="telemetry-pill-inner">
         <span class="telemetry-dot dot-good" aria-hidden="true"></span>
         <span class="telemetry-item telemetry-fps">60 FPS</span>
-        <span class="telemetry-sep" aria-hidden="true">/</span>
+        <span class="telemetry-sep" aria-hidden="true">·</span>
         <span class="telemetry-item telemetry-res">--×--</span>
-        <span class="telemetry-sep telemetry-pts-sep" aria-hidden="true">/</span>
-        <span class="telemetry-item telemetry-pts"></span>
+        <span class="telemetry-sep" aria-hidden="true">·</span>
+        <span class="telemetry-item telemetry-pts">--k pts</span>
+        <span class="telemetry-sep" aria-hidden="true">·</span>
+        <span class="telemetry-item telemetry-dpr">1.0x DPR</span>
+        <span class="telemetry-sep" aria-hidden="true">·</span>
+        <span class="telemetry-item telemetry-provider">${this.currentProvider}</span>
       </div>
     `;
 
@@ -100,10 +174,12 @@ export class TelemetryBadge {
     this.resEl = this.container.querySelector('.telemetry-res');
     this.dotEl = this.container.querySelector('.telemetry-dot');
     this.ptsEl = this.container.querySelector('.telemetry-pts');
+    this.dprEl = this.container.querySelector('.telemetry-dpr');
+    this.providerEl = this.container.querySelector('.telemetry-provider');
   }
 
   public setVisible(visible: boolean): void {
-    this.container.style.display = visible ? 'block' : 'none';
+    this.container.style.display = visible && this.isDebugActive() ? 'block' : 'none';
   }
 
   public destroy(): void {

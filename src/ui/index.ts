@@ -6,6 +6,7 @@ export * from './creditsModal';
 export * from './demoArt';
 export * from './depthDebugModal';
 export * from './floatingControls';
+export * from './gestures';
 export * from './icons';
 export * from './loadingOverlay';
 export * from './settingsDrawer';

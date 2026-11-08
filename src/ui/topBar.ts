@@ -1,6 +1,6 @@
 /**
- * Top Bar and Image Carousel Component for Drift
- * Displays active image status, thumbnail strip, navigation cycling, and system telemetry pills.
+ * Top Bar and Filmstrip Component for Drift
+ * Displays wordmark branding, loading indicator, filmstrip thumbnails, inline image counter, and add action.
  */
 
 import type { ImageItem } from '@/types';
@@ -23,22 +23,17 @@ export class TopBar {
   private loadingMessage: string = '';
   private pipelineProvider: string = 'WEBGPU';
   private depthMode: 'MODEL' | 'HEURISTIC' = 'MODEL';
-  private dpr: number = 1.0;
 
   constructor(parent: HTMLElement, options: TopBarOptions) {
     this.options = options;
     this.container = document.createElement('div');
     this.container.className = 'top-bar';
 
-    // Auto-detect WebGPU vs WASM support for initial badge
+    // Auto-detect WebGPU vs WASM support for initial pipeline detection
     if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
       this.pipelineProvider = 'WEBGPU';
     } else {
       this.pipelineProvider = 'WASM';
-    }
-
-    if (typeof window !== 'undefined' && window.devicePixelRatio) {
-      this.dpr = Math.min(window.devicePixelRatio, 2.0);
     }
 
     this.render();
@@ -52,7 +47,9 @@ export class TopBar {
       if (formatted === 'PROCEDURAL' || formatted === 'HEURISTIC') {
         this.depthMode = 'HEURISTIC';
       }
-      this.render();
+      if (this.isLoading) {
+        this.render();
+      }
     }
   }
 
@@ -69,20 +66,17 @@ export class TopBar {
         changed = true;
       }
     }
-    if (changed) {
+    if (changed && this.isLoading) {
       this.render();
     }
   }
 
-  public setDpr(dpr: number): void {
-    const clamped = Math.round(dpr * 10) / 10;
-    if (Math.abs(this.dpr - clamped) >= 0.1) {
-      this.dpr = clamped;
-      const dprLabel = this.container.querySelector('.dpr-label');
-      if (dprLabel) {
-        dprLabel.textContent = `DPR: ${clamped.toFixed(1)}`;
-      }
-    }
+  /**
+   * Retained for API compatibility with UIManager telemetry stream.
+   * Realtime telemetry is rendered in TelemetryBadge / debug readout.
+   */
+  public setDpr(_dpr: number): void {
+    // No-op: telemetry pills removed from top bar
   }
 
   public update(images: ImageItem[], currentIndex: number, isLoading: boolean, loadingMessage = ''): void {
@@ -106,45 +100,41 @@ export class TopBar {
     const displayName = current ? current.fileName : 'No images loaded';
 
     this.container.innerHTML = `
-      <!-- Left cluster: Branding & Depth Pipeline / Fallback HUD Indicator -->
+      <!-- Left cluster: Wordmark ("Drift" and "浮流") & Loading indicator -->
       <div class="top-bar-left">
-        <div class="app-branding">
+        <div class="app-branding" aria-label="Drift">
           <span class="app-branding-title">Drift</span>
-          <div 
-            class="depth-hud-pill depth-hud-${this.depthMode.toLowerCase()}" 
-            role="status" 
-            aria-label="Depth pipeline status: ${this.depthMode} (${this.pipelineProvider})"
-            title="Active Depth Estimation Pipeline: ${this.depthMode} (${this.pipelineProvider})"
-          >
-            <span class="depth-hud-dot" aria-hidden="true"></span>
-            <span class="depth-hud-mode">${this.depthMode}</span>
-            <span class="depth-hud-divider" aria-hidden="true">/</span>
-            <span class="depth-hud-provider">${this.pipelineProvider}</span>
-          </div>
+          <span class="app-branding-sub" aria-hidden="true">浮流</span>
         </div>
 
         ${this.isLoading ? `
-          <div class="top-bar-loading-pill" title="${this.loadingMessage}">
+          <div 
+            class="top-bar-loading-pill" 
+            role="status" 
+            aria-live="polite" 
+            title="${this.loadingMessage || 'Processing'} (${this.depthMode} / ${this.pipelineProvider})"
+          >
             <div class="pulse-dot" aria-hidden="true"></div>
             <span class="loading-label">${this.loadingMessage || 'Processing...'}</span>
+            <span class="depth-hud-pill depth-hud-${this.depthMode.toLowerCase()}">
+              <span class="depth-hud-dot" aria-hidden="true"></span>
+              <span class="depth-hud-mode">${this.depthMode}</span>
+              <span class="depth-hud-divider" aria-hidden="true">/</span>
+              <span class="depth-hud-provider">${this.pipelineProvider}</span>
+            </span>
           </div>
         ` : ''}
       </div>
 
-      <!-- Center cluster: Image carousel / thumbnail strip (Responsive & Scrollable) -->
-      <div class="top-bar-carousel" role="region" aria-label="Image Carousel">
-        ${hasImages && this.images.length > 1 ? `
-          <button class="carousel-btn btn-prev" aria-label="Previous image" title="Previous image">
-            ${ICONS.chevronLeft}
-          </button>
-        ` : ''}
-
-        <div class="carousel-thumbnails" role="tablist" aria-label="Loaded images">
+      <!-- Right cluster: Filmstrip thumbnails, inline nowrap image counter, and Add button -->
+      <div class="top-bar-right">
+        <div class="filmstrip-thumbnails carousel-thumbnails" role="tablist" aria-label="Loaded images">
           ${this.images.map((img, idx) => {
             const isActive = idx === this.currentIndex;
             const isProcessing = img.status === 'processing';
             return `
               <button 
+                type="button"
                 class="thumb-pill ${isActive ? 'active' : ''} ${isProcessing ? 'processing' : ''}" 
                 data-index="${idx}"
                 role="tab"
@@ -152,7 +142,7 @@ export class TopBar {
                 aria-label="Image ${idx + 1}: ${img.fileName}"
                 title="${img.fileName}"
               >
-                ${img.previewUrl ? `<img src="${img.previewUrl}" alt="" class="thumb-img" />` : ''}
+                ${img.previewUrl ? `<img src="${img.previewUrl}" alt="${img.fileName}" class="thumb-img" />` : ''}
                 <span class="thumb-number">${idx + 1}</span>
                 ${isProcessing ? '<div class="thumb-spinner" aria-hidden="true"></div>' : ''}
               </button>
@@ -160,36 +150,14 @@ export class TopBar {
           }).join('')}
         </div>
 
-        ${hasImages && this.images.length > 1 ? `
-          <button class="carousel-btn btn-next" aria-label="Next image (Spacebar)" title="Next image (Spacebar)">
-            ${ICONS.chevronRight}
-          </button>
-        ` : ''}
+        <span class="image-counter" ${hasImages ? '' : 'style="display: none;"'} title="${displayName}">${countText}</span>
 
-        ${hasImages ? `
-          <div class="image-indicator" title="${displayName}">
-            <span class="image-counter">${countText}</span>
-            <span class="image-separator" aria-hidden="true">•</span>
-            <span class="image-filename">${displayName}</span>
-          </div>
-        ` : ''}
-      </div>
-
-      <!-- Right cluster: System telemetry pills & action buttons -->
-      <div class="top-bar-right">
-        <div class="sys-dpr-pill" title="System Status: Ready | Device Pixel Ratio: ${this.dpr.toFixed(1)}">
-          <span class="sys-dot" aria-hidden="true"></span>
-          <span class="sys-label">SYS: OK</span>
-          <span class="pill-divider" aria-hidden="true">|</span>
-          <span class="dpr-label">DPR: ${this.dpr.toFixed(1)}</span>
-        </div>
-
-        <button class="top-bar-btn btn-depth-inspector" aria-label="Depth Map Inspector (D)" title="Depth Map Inspector (D)">
-          ${ICONS.layers}
-          <span class="btn-text">Depth</span>
-        </button>
-
-        <button class="top-bar-btn btn-add-images" aria-label="Add Pictures" title="Add Pictures (up to 4)">
+        <button 
+          type="button" 
+          class="top-bar-btn btn-add-images" 
+          aria-label="Add image" 
+          title="Add image"
+        >
           ${ICONS.plus}
           <span class="btn-text">Add</span>
         </button>
@@ -197,17 +165,8 @@ export class TopBar {
     `;
 
     // Bind event handlers
-    const prevBtn = this.container.querySelector('.btn-prev');
-    prevBtn?.addEventListener('click', () => this.options.onPrev());
-
-    const nextBtn = this.container.querySelector('.btn-next');
-    nextBtn?.addEventListener('click', () => this.options.onNext());
-
     const addBtn = this.container.querySelector('.btn-add-images');
     addBtn?.addEventListener('click', () => this.options.onAddImages());
-
-    const depthBtn = this.container.querySelector('.btn-depth-inspector');
-    depthBtn?.addEventListener('click', () => this.options.onToggleDepthView?.());
 
     const thumbPills = this.container.querySelectorAll('.thumb-pill');
     thumbPills.forEach((pill) => {

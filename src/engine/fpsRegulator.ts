@@ -10,12 +10,12 @@ export class FPSRegulator {
   private lowFPSTime: number = 0; // Cumulative seconds below 50 FPS
   private highFPSTime: number = 0; // Cumulative seconds above 58 FPS
   private readonly minParticles: number = 50_000;
-  private readonly maxParticles: number = 200_000;
-  private targetParticles: number = 200_000;
-  private currentParticles: number = 200_000;
+  private readonly maxParticles: number = 600_000;
+  private targetParticles: number = 450_000;
+  private currentParticles: number = 450_000;
   private enabled: boolean = true;
 
-  constructor(targetParticles: number = 200_000, enabled: boolean = true) {
+  constructor(targetParticles: number = 450_000, enabled: boolean = true) {
     this.targetParticles = Math.max(this.minParticles, Math.min(targetParticles, this.maxParticles));
     this.currentParticles = this.targetParticles;
     this.enabled = enabled;

@@ -37,6 +37,10 @@ export interface UIManagerCallbacks {
   onRetryModel: () => void;
   onUseProceduralFallback: () => void;
   onToggleDepthView?: () => void;
+  onToggleHandTool?: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
 }
 
 export class UIManager {
@@ -51,6 +55,11 @@ export class UIManager {
 
   private state: AppState;
   private callbacks: UIManagerCallbacks;
+
+  private inactivityTimer: number | null = null;
+  private isChromeHidden: boolean = false;
+  private readonly autoHideDelayMs: number = 3000;
+  private activityListeners: Array<() => void> = [];
 
   constructor(initialState: AppState, callbacks: UIManagerCallbacks) {
     this.state = initialState;
@@ -108,6 +117,10 @@ export class UIManager {
       onOpenCredits: () => this.openCredits(),
       onExport: () => this.callbacks.onExport(),
       onToggleRecordVideo: () => this.callbacks.onToggleRecordVideo(),
+      onToggleHandTool: () => this.callbacks.onToggleHandTool?.(),
+      onZoomIn: () => this.callbacks.onZoomIn?.(),
+      onZoomOut: () => this.callbacks.onZoomOut?.(),
+      onZoomReset: () => this.callbacks.onZoomReset?.(),
     });
 
     // 4. Settings Drawer
@@ -148,17 +161,106 @@ export class UIManager {
 
     // 8. Live Real-Time Telemetry Badge
     this.telemetryBadge = new TelemetryBadge(uiLayer);
+    this.telemetryBadge.setDebug(!!this.state.settings.debug);
 
     // Initial state reflection
     this.update(initialState);
+
+    // Setup Chrome Auto-Hide
+    this.setupAutoHide();
+  }
+
+  private setupAutoHide(): void {
+    const onActivity = () => {
+      this.revealChrome();
+    };
+
+    window.addEventListener('mousemove', onActivity, { passive: true });
+    window.addEventListener('pointermove', onActivity, { passive: true });
+    window.addEventListener('touchstart', onActivity, { passive: true });
+    window.addEventListener('keydown', onActivity, { passive: true });
+
+    this.activityListeners.push(() => {
+      window.removeEventListener('mousemove', onActivity);
+      window.removeEventListener('pointermove', onActivity);
+      window.removeEventListener('touchstart', onActivity);
+      window.removeEventListener('keydown', onActivity);
+    });
+
+    this.resetActivityTimer();
+  }
+
+  public isAnyOverlayOrModalOpen(): boolean {
+    if (this.floatingControls.getIsOverlaysPopoverOpen?.()) return true;
+    if (this.settingsDrawer.getIsOpen()) return true;
+    if (this.creditsModal.getIsOpen()) return true;
+    if (this.depthDebugModal.getIsOpen()) return true;
+    if (this.titleScreen.isOpen()) return true;
+    if (this.state.isLoading) return true;
+    if (typeof document !== 'undefined') {
+      const activeDialog = document.querySelector(
+        '.popover.open, [data-popover-open="true"], .drawer-backdrop.active, .credits-modal-backdrop.active, .depth-debug-backdrop.active'
+      );
+      if (activeDialog) return true;
+    }
+    return false;
+  }
+
+  public revealChrome(): void {
+    if (this.isChromeHidden) {
+      this.isChromeHidden = false;
+      document.body.classList.remove('chrome-hidden');
+    }
+    this.resetActivityTimer();
+  }
+
+  public hideChrome(): void {
+    // Guard: NEVER hide chrome while any modal, drawer, or popover is open
+    if (this.isAnyOverlayOrModalOpen()) {
+      return;
+    }
+
+    // Guard: do not hide if cursor is hovering over interactive chrome
+    if (typeof document !== 'undefined') {
+      const isHovering = document.querySelector(
+        '.app-header:hover, .app-footer:hover, .floating-controls:hover, .top-bar:hover, .settings-drawer-panel:hover'
+      );
+      if (isHovering) {
+        this.resetActivityTimer();
+        return;
+      }
+    }
+
+    this.isChromeHidden = true;
+    document.body.classList.add('chrome-hidden');
+  }
+
+  public resetActivityTimer(): void {
+    if (this.inactivityTimer !== null) {
+      window.clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = null;
+    }
+
+    if (this.isAnyOverlayOrModalOpen()) {
+      if (this.isChromeHidden) {
+        this.revealChrome();
+      }
+      return;
+    }
+
+    this.inactivityTimer = window.setTimeout(() => {
+      this.hideChrome();
+    }, this.autoHideDelayMs);
   }
 
   public openAddImagesDialog(): void {
+    this.revealChrome();
     this.titleScreen.setHasExistingImages(this.state.images.length > 0);
     this.titleScreen.show();
   }
 
   public openSettings(): void {
+    this.revealChrome();
     this.state.drawerOpen = true;
     this.settingsDrawer.open();
   }
@@ -166,6 +268,7 @@ export class UIManager {
   public closeSettings(): void {
     this.state.drawerOpen = false;
     this.settingsDrawer.close();
+    this.resetActivityTimer();
   }
 
   public toggleSettings(): void {
@@ -177,6 +280,7 @@ export class UIManager {
   }
 
   public openCredits(): void {
+    this.revealChrome();
     this.state.creditsOpen = true;
     this.creditsModal.open();
   }
@@ -184,6 +288,7 @@ export class UIManager {
   public closeCredits(): void {
     this.state.creditsOpen = false;
     this.creditsModal.close();
+    this.resetActivityTimer();
   }
 
   public toggleCredits(): void {
@@ -199,6 +304,7 @@ export class UIManager {
   }
 
   public openDepthDebug(depthResult?: DepthResult, fileName?: string): void {
+    this.revealChrome();
     const cur = this.getCurrentImage();
     const dr = depthResult ?? cur?.depthResult;
     const fn = fileName ?? cur?.fileName;
@@ -207,13 +313,20 @@ export class UIManager {
 
   public closeDepthDebug(): void {
     this.depthDebugModal.close();
+    this.resetActivityTimer();
   }
 
   public toggleDepthDebug(depthResult?: DepthResult, fileName?: string): void {
     const cur = this.getCurrentImage();
     const dr = depthResult ?? cur?.depthResult;
     const fn = fileName ?? cur?.fileName;
-    this.depthDebugModal.toggle(dr, fn);
+    if (this.depthDebugModal.getIsOpen()) {
+      this.depthDebugModal.close();
+      this.resetActivityTimer();
+    } else {
+      this.revealChrome();
+      this.depthDebugModal.open(dr, fn);
+    }
   }
 
   public updateDepthDebug(depthResult?: DepthResult, fileName?: string): void {
@@ -233,19 +346,29 @@ export class UIManager {
     height: number;
     particleCount?: number;
     dpr?: number;
+    zoom?: number;
   }): void {
     this.telemetryBadge.update(data);
     if (data.dpr) {
       this.topBar.setDpr(data.dpr);
     }
+    if (data.zoom !== undefined) {
+      this.floatingControls.setZoom(data.zoom);
+    }
   }
 
   public setPipelineProvider(provider: string): void {
     this.topBar.setPipelineProvider(provider);
+    this.telemetryBadge.setProvider(provider);
+    this.settingsDrawer.setPipelineProvider(provider);
   }
 
   public setDepthMode(mode: 'MODEL' | 'HEURISTIC', provider?: string): void {
     this.topBar.setDepthMode(mode, provider);
+    if (provider) {
+      this.telemetryBadge.setProvider(provider);
+    }
+    this.settingsDrawer.setDepthMode(mode, provider);
   }
 
   private getCurrentImage(): ImageItem | undefined {
@@ -257,6 +380,10 @@ export class UIManager {
 
   public closeAllModals(): boolean {
     let closedAny = false;
+    if (this.floatingControls.getIsOverlaysPopoverOpen()) {
+      this.floatingControls.closeOverlaysPopover();
+      closedAny = true;
+    }
     if (this.depthDebugModal.getIsOpen()) {
       this.closeDepthDebug();
       closedAny = true;
@@ -273,7 +400,18 @@ export class UIManager {
       this.titleScreen.hide();
       closedAny = true;
     }
+    if (closedAny) {
+      this.resetActivityTimer();
+    }
     return closedAny;
+  }
+
+  public setHandToolActive(active: boolean): void {
+    this.floatingControls.setHandToolActive(active);
+  }
+
+  public setZoom(zoom: number): void {
+    this.floatingControls.setZoom(zoom);
   }
 
   public showLoading(stage: string, progress: number, message?: string): void {
@@ -316,6 +454,9 @@ export class UIManager {
 
     // Settings Drawer
     this.settingsDrawer.updateSettings(this.state.settings);
+
+    // Telemetry Badge Debug Visibility
+    this.telemetryBadge.setDebug(!!this.state.settings.debug);
 
     // Modals
     if (this.state.drawerOpen && !this.settingsDrawer.getIsOpen()) {

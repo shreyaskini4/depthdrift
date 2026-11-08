@@ -35,7 +35,7 @@ export interface SampleOptions {
   targetCount?: number;
 }
 
-export const MAX_PARTICLE_CAPACITY = 200_000;
+export const MAX_PARTICLE_CAPACITY = 600_000;
 
 /**
  * Shuffles particle attributes in-place using the Fisher-Yates shuffle algorithm.
@@ -101,7 +101,7 @@ export function shuffleParticles(
   if (n <= 1) return;
 
   for (let i = n - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = (Math.random() * (i + 1)) | 0;
     if (i === j) continue;
 
     const i3 = i * 3;
@@ -158,25 +158,43 @@ export function shuffleParticles(
 
 /**
  * Extracts raw ImageData from HTMLCanvasElement, ImageBitmap, or ImageData.
+ * Resamples to at most 2048px on the long edge so fine detail survives zoom.
  */
-export function extractImageData(pixels: HTMLCanvasElement | ImageBitmap | ImageData): ImageData {
-  if (typeof ImageData !== 'undefined' && pixels instanceof ImageData) {
-    return pixels;
-  }
-
+export function extractImageData(
+  pixels: HTMLCanvasElement | ImageBitmap | ImageData,
+  maxDimension: number = 2048
+): ImageData {
   const width = (pixels as { width: number }).width;
   const height = (pixels as { height: number }).height;
+  const longEdge = Math.max(width, height);
 
-  // Offscreen canvas or standard canvas element
-  let canvas: HTMLCanvasElement | OffscreenCanvas;
-  if (typeof OffscreenCanvas !== 'undefined') {
-    canvas = new OffscreenCanvas(width, height);
-  } else {
-    canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+  let targetWidth = width;
+  let targetHeight = height;
+
+  if (maxDimension > 0 && longEdge > maxDimension) {
+    const scale = maxDimension / longEdge;
+    targetWidth = Math.max(1, Math.round(width * scale));
+    targetHeight = Math.max(1, Math.round(height * scale));
   }
 
+  // If already ImageData and no resize needed, return directly
+  if (typeof ImageData !== 'undefined' && pixels instanceof ImageData) {
+    if (targetWidth === width && targetHeight === height) {
+      return pixels;
+    }
+  }
+
+  const createCanvas = (w: number, h: number): HTMLCanvasElement | OffscreenCanvas => {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      return new OffscreenCanvas(w, h);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    return canvas;
+  };
+
+  const canvas = createCanvas(targetWidth, targetHeight);
   const ctx = canvas.getContext('2d', { willReadFrequently: true }) as
     | CanvasRenderingContext2D
     | OffscreenCanvasRenderingContext2D
@@ -186,8 +204,47 @@ export function extractImageData(pixels: HTMLCanvasElement | ImageBitmap | Image
     throw new Error('Unable to acquire 2D rendering context for image sampling.');
   }
 
-  ctx.drawImage(pixels as CanvasImageSource, 0, 0, width, height);
-  return ctx.getImageData(0, 0, width, height);
+  if (typeof ImageData !== 'undefined' && pixels instanceof ImageData) {
+    const tempCanvas = createCanvas(width, height);
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true }) as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null;
+    if (tempCtx) {
+      tempCtx.putImageData(pixels, 0, 0);
+      ctx.drawImage(tempCanvas as CanvasImageSource, 0, 0, targetWidth, targetHeight);
+    }
+  } else {
+    ctx.drawImage(pixels as CanvasImageSource, 0, 0, targetWidth, targetHeight);
+  }
+
+  return ctx.getImageData(0, 0, targetWidth, targetHeight);
+}
+
+/**
+ * Samples RGB color with bilinear interpolation from ImageData at normalized (u, v) coordinates.
+ * Writes normalized [0..1] values into out array at offset o.
+ */
+export function sampleColorBilinear(
+  img: ImageData,
+  u: number,
+  v: number,
+  out: Float32Array,
+  o: number
+): void {
+  const { width: w, height: h, data } = img;
+  const x = Math.min(w - 1, Math.max(0, u * w - 0.5));
+  const y = Math.min(h - 1, Math.max(0, v * h - 0.5));
+  const x0 = x | 0, y0 = y | 0;
+  const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+  const fx = x - x0, fy = y - y0;
+  const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4;
+  const c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
+  for (let k = 0; k < 3; k++) {
+    const top = data[a + k] * (1 - fx) + data[b + k] * fx;
+    const bot = data[c + k] * (1 - fx) + data[d + k] * fx;
+    out[o + k] = (top * (1 - fy) + bot * fy) / 255;
+  }
 }
 
 /**
@@ -195,24 +252,27 @@ export function extractImageData(pixels: HTMLCanvasElement | ImageBitmap | Image
  */
 export function sampleDepth(depth: DepthResult, u: number, v: number): number {
   const { width, height, data } = depth;
-  const cu = Math.max(0, Math.min(1, u));
-  const cv = Math.max(0, Math.min(1, v));
+  const cu = u < 0 ? 0 : u > 1 ? 1 : u;
+  const cv = v < 0 ? 0 : v > 1 ? 1 : v;
 
   const x = cu * (width - 1);
   const y = cv * (height - 1);
 
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const x1 = Math.min(width - 1, x0 + 1);
-  const y1 = Math.min(height - 1, y0 + 1);
+  const x0 = x | 0;
+  const y0 = y | 0;
+  const x1 = x0 + 1 < width ? x0 + 1 : width - 1;
+  const y1 = y0 + 1 < height ? y0 + 1 : height - 1;
 
   const dx = x - x0;
   const dy = y - y0;
 
-  const d00 = data[y0 * width + x0] ?? 0.5;
-  const d10 = data[y0 * width + x1] ?? 0.5;
-  const d01 = data[y1 * width + x0] ?? 0.5;
-  const d11 = data[y1 * width + x1] ?? 0.5;
+  const r0 = y0 * width;
+  const r1 = y1 * width;
+
+  const d00 = data[r0 + x0];
+  const d10 = data[r0 + x1];
+  const d01 = data[r1 + x0];
+  const d11 = data[r1 + x1];
 
   const top = d00 * (1 - dx) + d10 * dx;
   const bottom = d01 * (1 - dx) + d11 * dx;
@@ -227,6 +287,7 @@ export function sampleImageAndDepth(
   depth: DepthResult,
   targetCountOrOptions: number | SampleOptions = MAX_PARTICLE_CAPACITY
 ): SampledParticles {
+  const tStart = performance.now();
   let targetCount = MAX_PARTICLE_CAPACITY;
   if (typeof targetCountOrOptions === 'number') {
     targetCount = targetCountOrOptions;
@@ -241,7 +302,7 @@ export function sampleImageAndDepth(
   if (!targetCount || targetCount <= 0) {
     targetCount = MAX_PARTICLE_CAPACITY;
   }
-  const imgData = extractImageData(pixelsSource);
+  const imgData = extractImageData(pixelsSource, 2048);
   const imgWidth = imgData.width;
   const imgHeight = imgData.height;
   const aspect = imgWidth / Math.max(1, imgHeight);
@@ -251,6 +312,8 @@ export function sampleImageAndDepth(
   const gridW = Math.min(512, imgWidth);
   const gridH = Math.min(512, imgHeight);
   const totalCells = gridW * gridH;
+  const invGridW = 1.0 / gridW;
+  const invGridH = 1.0 / gridH;
 
   const luminanceGrid = new Float32Array(totalCells);
   const depthGrid = new Float32Array(totalCells);
@@ -258,22 +321,24 @@ export function sampleImageAndDepth(
 
   // 1. Compute downsampled luminance and depth grid
   for (let gy = 0; gy < gridH; gy++) {
-    const v = (gy + 0.5) / gridH;
-    const py = Math.min(imgHeight - 1, Math.floor(v * imgHeight));
+    const v = (gy + 0.5) * invGridH;
+    const py = Math.min(imgHeight - 1, (v * imgHeight) | 0);
+    const rowOffset = py * imgWidth;
+    const gRowOffset = gy * gridW;
 
     for (let gx = 0; gx < gridW; gx++) {
-      const u = (gx + 0.5) / gridW;
-      const px = Math.min(imgWidth - 1, Math.floor(u * imgWidth));
-      const pIdx = (py * imgWidth + px) * 4;
+      const u = (gx + 0.5) * invGridW;
+      const px = Math.min(imgWidth - 1, (u * imgWidth) | 0);
+      const pIdx = (rowOffset + px) * 4;
 
-      const r = imgBytes[pIdx] / 255.0;
-      const g = imgBytes[pIdx + 1] / 255.0;
-      const b = imgBytes[pIdx + 2] / 255.0;
+      const r = imgBytes[pIdx];
+      const g = imgBytes[pIdx + 1];
+      const b = imgBytes[pIdx + 2];
 
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
       const dep = sampleDepth(depth, u, v);
 
-      const cellIdx = gy * gridW + gx;
+      const cellIdx = gRowOffset + gx;
       luminanceGrid[cellIdx] = luma;
       depthGrid[cellIdx] = dep;
     }
@@ -314,6 +379,19 @@ export function sampleImageAndDepth(
       cdf[cellIdx] = cumulativeWeight;
     }
   }
+
+  // Acceleration LUT for fast CDF importance sampling
+  const LUT_SIZE = 65536;
+  const lut = new Int32Array(LUT_SIZE);
+  let curLutIdx = 0;
+  for (let i = 0; i < LUT_SIZE; i++) {
+    const threshold = (i / LUT_SIZE) * cumulativeWeight;
+    while (curLutIdx < totalCells - 1 && cdf[curLutIdx] < threshold) {
+      curLutIdx++;
+    }
+    lut[i] = curLutIdx;
+  }
+  const lutScale = LUT_SIZE / cumulativeWeight;
 
   // 3. Extract salient trackers: strictly local maxima of depth gradient, edge strength, and luminance (NMS)
   // Non-maximum suppression (NMS) local peaks across the grid
@@ -478,29 +556,23 @@ export function sampleImageAndDepth(
 
   const uCols = Math.round(Math.sqrt(uniformCount * aspect));
   const uRows = Math.ceil(uniformCount / Math.max(1, uCols));
+  const invUCols = 1.0 / uCols;
+  const invURows = 1.0 / uRows;
 
   let p = 0;
 
   // A. Stratified jittered sampling
   for (let r = 0; r < uRows && p < uniformCount; r++) {
     for (let c = 0; c < uCols && p < uniformCount; c++) {
-      const u = (c + Math.random()) / uCols;
-      const v = (r + Math.random()) / uRows;
+      const u = (c + Math.random()) * invUCols;
+      const v = (r + Math.random()) * invURows;
 
       if (u > 1.0 || v > 1.0) continue;
 
-      const px = Math.min(imgWidth - 1, Math.max(0, Math.floor(u * imgWidth)));
-      const py = Math.min(imgHeight - 1, Math.max(0, Math.floor(v * imgHeight)));
-      const pIdx = (py * imgWidth + px) * 4;
-
-      const red = imgBytes[pIdx] / 255.0;
-      const green = imgBytes[pIdx + 1] / 255.0;
-      const blue = imgBytes[pIdx + 2] / 255.0;
-
       const dep = sampleDepth(depth, u, v);
 
-      const gx = Math.min(gridW - 1, Math.floor(u * gridW));
-      const gy = Math.min(gridH - 1, Math.floor(v * gridH));
+      const gx = Math.min(gridW - 1, (u * gridW) | 0);
+      const gy = Math.min(gridH - 1, (v * gridH) | 0);
       const sal = salienceGrid[gy * gridW + gx];
 
       const p3 = p * 3;
@@ -508,9 +580,7 @@ export function sampleImageAndDepth(
       positions[p3 + 1] = 0.5 - v;
       positions[p3 + 2] = dep - 0.5;
 
-      colors[p3] = red;
-      colors[p3 + 1] = green;
-      colors[p3 + 2] = blue;
+      sampleColorBilinear(imgData, u, v, colors, p3);
 
       const p2 = p * 2;
       randomSeeds[p2] = Math.random();
@@ -527,10 +597,11 @@ export function sampleImageAndDepth(
   for (let i = 0; i < importanceCount && p < count; i++) {
     const targetVal = Math.random() * cumulativeWeight;
 
-    // Binary search on CDF
-    let low = 0;
-    let high = totalCells - 1;
-    let foundCell = 0;
+    // Fast LUT-bounded binary search on CDF
+    const bin = Math.min(LUT_SIZE - 1, (targetVal * lutScale) | 0);
+    let low = bin > 0 ? lut[bin] - 1 : 0;
+    let high = bin + 1 < LUT_SIZE ? lut[bin + 1] : totalCells - 1;
+    let foundCell = high;
 
     while (low <= high) {
       const mid = (low + high) >> 1;
@@ -542,19 +613,11 @@ export function sampleImageAndDepth(
       }
     }
 
-    const cellY = Math.floor(foundCell / gridW);
-    const cellX = foundCell % gridW;
+    const cellY = (foundCell / gridW) | 0;
+    const cellX = foundCell - cellY * gridW;
 
-    const u = (cellX + Math.random()) / gridW;
-    const v = (cellY + Math.random()) / gridH;
-
-    const px = Math.min(imgWidth - 1, Math.max(0, Math.floor(u * imgWidth)));
-    const py = Math.min(imgHeight - 1, Math.max(0, Math.floor(v * imgHeight)));
-    const pIdx = (py * imgWidth + px) * 4;
-
-    const red = imgBytes[pIdx] / 255.0;
-    const green = imgBytes[pIdx + 1] / 255.0;
-    const blue = imgBytes[pIdx + 2] / 255.0;
+    const u = (cellX + Math.random()) * invGridW;
+    const v = (cellY + Math.random()) * invGridH;
 
     const dep = sampleDepth(depth, u, v);
     const sal = salienceGrid[foundCell];
@@ -564,9 +627,7 @@ export function sampleImageAndDepth(
     positions[p3 + 1] = 0.5 - v;
     positions[p3 + 2] = dep - 0.5;
 
-    colors[p3] = red;
-    colors[p3 + 1] = green;
-    colors[p3 + 2] = blue;
+    sampleColorBilinear(imgData, u, v, colors, p3);
 
     const p2 = p * 2;
     randomSeeds[p2] = Math.random();
@@ -580,6 +641,9 @@ export function sampleImageAndDepth(
 
   // Shuffle particles using Fisher-Yates so lower particle counts thin evenly across the whole image
   shuffleParticles(positions, colors, randomSeeds, saliences, depths, p);
+
+  const durationMs = performance.now() - tStart;
+  console.log(`[Drift Sampling] Sampled ${p} particles at full capacity in ${durationMs.toFixed(1)}ms`);
 
   return {
     positions,

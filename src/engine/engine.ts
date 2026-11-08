@@ -94,6 +94,13 @@ export class ThreeParticleEngine implements ParticleEngine {
   private baseCamZ = 2.0;
   private travelBlend: number = 0;
 
+  // View pan and zoom state
+  private zoom: number = 1.0;
+  private zoomTarget: number = 1.0;
+  private pan: THREE.Vector2 = new THREE.Vector2(0, 0);
+  private panTarget: THREE.Vector2 = new THREE.Vector2(0, 0);
+  private smoothParallax: THREE.Vector2 = new THREE.Vector2(0, 0);
+
   // Render timing & caching
   private startMs: number = typeof performance !== 'undefined' ? performance.now() : Date.now();
   private lastTime: number = -1;
@@ -107,11 +114,23 @@ export class ThreeParticleEngine implements ParticleEngine {
       (typeof window !== 'undefined' && window.location.search.includes('debug')) ||
       !!initialSettings?.debug;
 
+    const isCoarse =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+
+    const defaultQuality: 'STANDARD' | 'HIGH' | 'ULTRA' = isCoarse
+      ? 'STANDARD'
+      : 'HIGH';
+    const defaultParticleCount = isCoarse ? 200_000 : 450_000;
+
     // Default settings
     this.settings = {
-      particleCount: initialSettings?.particleCount ?? 200_000,
-      pointSize: initialSettings?.pointSize ?? 1.3,
+      particleCount: initialSettings?.particleCount ?? defaultParticleCount,
+      pointSize: initialSettings?.pointSize ?? 1.0,
       depthScale: initialSettings?.depthScale ?? 0.3,
+      intensity: initialSettings?.intensity ?? 1.35,
+      quality: initialSettings?.quality ?? defaultQuality,
       noiseSpeed: initialSettings?.noiseSpeed ?? 0.6,
       noiseFrequency: initialSettings?.noiseFrequency ?? 1.2,
       noiseStrength: initialSettings?.noiseStrength ?? 0.8,
@@ -142,7 +161,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     // Initial width & height
     this.width = this.canvas.clientWidth || 800;
     this.height = this.canvas.clientHeight || 600;
-    this.dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2.0);
+    this.dpr = this.effectivePixelRatio();
 
     // Three.js renderer
     this.renderer = new THREE.WebGLRenderer({
@@ -159,6 +178,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 50);
+    this.camera.zoom = this.zoom;
     this.fitCamera();
     this.camera.lookAt(0, 0, 0);
 
@@ -212,6 +232,8 @@ export class ThreeParticleEngine implements ParticleEngine {
         uAttractor: { value: new THREE.Vector3(0, 0, 0.6) },
         uOrientation: { value: new THREE.Vector2(0, 0) },
         uPixelRatio: { value: this.dpr },
+        uZoom: { value: this.zoom },
+        uIntensity: { value: this.settings.intensity },
         uMorphProgress: { value: 0.0 },
         uImpulseCenter: { value: new THREE.Vector2(0, 0) },
         uImpulseStrength: { value: 0.0 },
@@ -237,6 +259,13 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Initial clear color
     this.updateClearColor(this.settings.colorMode);
+  }
+
+  private effectivePixelRatio(): number {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const ss = { STANDARD: 1, HIGH: 2, ULTRA: 3 }[this.settings.quality];
+    const cap = Math.sqrt(14e6 / Math.max(1, this.width * this.height));
+    return Math.max(1, Math.min(Math.max(dpr, ss), cap));
   }
 
   private fitCamera(): void {
@@ -347,6 +376,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (data.aspect) {
       this.imageAspect = data.aspect;
       this.fitCamera();
+      this.clampPan();
     }
 
     this.baseTrackers = data.trackers;
@@ -362,7 +392,10 @@ export class ThreeParticleEngine implements ParticleEngine {
         `[Drift Engine] Trackers updated: count=${this.baseTrackers.length}, zMin=${minZ.toFixed(4)}, zMax=${maxZ.toFixed(4)}, zSpan=${(maxZ - minZ).toFixed(4)}`
       );
     }
-    this.geometry.setDrawRange(0, count);
+    const effectiveCount = this.fpsRegulator
+      ? Math.min(count, this.fpsRegulator.getEffectiveParticleCount())
+      : Math.min(count, this.settings.particleCount);
+    this.geometry.setDrawRange(0, effectiveCount);
   }
 
   public setImage(
@@ -372,13 +405,13 @@ export class ThreeParticleEngine implements ParticleEngine {
   ): void {
     this.lastPixels = pixels;
     this.lastDepth = depth;
-    const targetCount =
-      typeof options === 'number'
-        ? options
-        : (options?.count ?? options?.targetCount ?? this.settings.particleCount);
+    void options;
+    // Always sample at full MAX_PARTICLE_CAPACITY; the user's particleCount only changes the draw range
+    const targetCount = MAX_PARTICLE_CAPACITY;
     const sampled = sampleImageAndDepth(pixels, depth, targetCount);
     this.imageAspect = sampled.aspect || (pixels.width / Math.max(1, pixels.height)) || 1.0;
     this.fitCamera();
+    this.clampPan();
     this.applySampledData(sampled, true);
   }
 
@@ -402,6 +435,20 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (settings.depthScale !== undefined) {
       this.settings.depthScale = settings.depthScale;
       this.material.uniforms.uDepthScale.value = settings.depthScale;
+    }
+
+    if (settings.intensity !== undefined) {
+      this.settings.intensity = settings.intensity;
+      this.material.uniforms.uIntensity.value = settings.intensity;
+    }
+
+    if (settings.quality !== undefined) {
+      this.settings.quality = settings.quality;
+      const targetDpr = this.effectivePixelRatio();
+      this.dpr = targetDpr;
+      this.renderer.setPixelRatio(targetDpr);
+      this.renderer.setSize(this.width, this.height, false);
+      this.material.uniforms.uPixelRatio.value = targetDpr;
     }
 
     if (settings.noiseSpeed !== undefined) {
@@ -552,16 +599,12 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.material.uniforms.uImpulseStrength.value = 1.0;
   }
 
-  public resize(width: number, height: number, dpr?: number): void {
+  public resize(width: number, height: number, _dpr?: number): void {
     if (width <= 0 || height <= 0) return;
-
-    const targetDpr = Math.min(
-      dpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1),
-      2.0
-    );
 
     this.width = width;
     this.height = height;
+    const targetDpr = this.effectivePixelRatio();
     this.dpr = targetDpr;
 
     this.renderer.setPixelRatio(targetDpr);
@@ -571,8 +614,57 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.camera.updateProjectionMatrix();
 
     this.fitCamera();
+    this.clampPan();
 
     this.material.uniforms.uPixelRatio.value = targetDpr;
+  }
+
+  private halfExtents(z: number): { hw: number; hh: number } {
+    const hh = (this.baseCamZ * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / z;
+    return { hw: (hh * this.width) / Math.max(1, this.height), hh };
+  }
+
+  public zoomAt(factor: number, nx: number = 0, ny: number = 0): void {
+    const z1 = THREE.MathUtils.clamp(this.zoomTarget * factor, 0.5, 12);
+    const a = this.halfExtents(this.zoomTarget);
+    const b = this.halfExtents(z1);
+    this.panTarget.x += nx * (a.hw - b.hw); // keeps the point under the cursor fixed
+    this.panTarget.y += ny * (a.hh - b.hh);
+    this.zoomTarget = z1;
+    this.clampPan();
+  }
+
+  public setZoom(zoom: number): void {
+    this.zoomTarget = THREE.MathUtils.clamp(zoom, 0.5, 12);
+    this.clampPan();
+  }
+
+  public panByPixels(dx: number, dy: number): void {
+    const e = this.halfExtents(this.zoomTarget);
+    this.panTarget.x -= (dx / Math.max(1, this.width)) * 2 * e.hw;
+    this.panTarget.y += (dy / Math.max(1, this.height)) * 2 * e.hh; // screen dy is down, y is up
+    this.clampPan();
+  }
+
+  public clampPan(): void {
+    const e = this.halfExtents(this.zoomTarget);
+    const limX = Math.max(0, this.imageAspect / 2 - 0.9 * e.hw);
+    const limY = Math.max(0, 0.5 - 0.9 * e.hh);
+    this.panTarget.x = THREE.MathUtils.clamp(this.panTarget.x, -limX, limX);
+    this.panTarget.y = THREE.MathUtils.clamp(this.panTarget.y, -limY, limY);
+  }
+
+  public resetView(): void {
+    this.zoomTarget = 1.0;
+    this.panTarget.set(0, 0);
+  }
+
+  public getView(): { zoom: number; panX: number; panY: number } {
+    return {
+      zoom: this.zoom,
+      panX: this.pan.x,
+      panY: this.pan.y,
+    };
   }
 
   public setDebug(debug: boolean): void {
@@ -612,11 +704,11 @@ export class ThreeParticleEngine implements ParticleEngine {
       ty = 0.2 * Math.cos(tSec * 0.33);
       amt = 0.6;
     }
-    const k = 1 - Math.exp(-dt * 3.0);
+    const kAttractor = 1 - Math.exp(-dt * 3.0);
     const att = this.material.uniforms.uAttractor.value;
-    att.x += (tx - att.x) * k;
-    att.y += (ty - att.y) * k;
-    att.z += (amt - att.z) * k;
+    att.x += (tx - att.x) * kAttractor;
+    att.y += (ty - att.y) * kAttractor;
+    att.z += (amt - att.z) * kAttractor;
 
     // Adaptive FPS regulation
     const { fps, effectiveParticleCount } = this.fpsRegulator.update(dt);
@@ -674,21 +766,35 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.material.uniforms.uImpulseStrength.value = 0.0;
     }
 
-    // Subtle interactive camera parallax
+    // Easing for zoom & pan
+    const k = 1 - Math.exp(-dt * 12);
+    this.zoom += (this.zoomTarget - this.zoom) * k;
+    this.pan.lerp(this.panTarget, k);
+
+    this.camera.zoom = this.zoom;
+    this.camera.updateProjectionMatrix();
+    this.material.uniforms.uZoom.value = this.zoom;
+    this.material.uniforms.uIntensity.value = this.settings.intensity;
+
+    // Camera parallax with frame-rate independent easing
     const targetCamX =
       ((this.pointerState.x / Math.max(1, this.width) - 0.5) * 0.15 + this.orientation.y * 0.2);
     const targetCamY =
       (-(this.pointerState.y / Math.max(1, this.height) - 0.5) * 0.15 - this.orientation.x * 0.2);
 
-    this.camera.position.x += (targetCamX - this.camera.position.x) * 0.05;
-    this.camera.position.y += (targetCamY - this.camera.position.y) * 0.05;
+    const kParallax = 1 - Math.exp(-dt * 3);
+    this.smoothParallax.x += (targetCamX - this.smoothParallax.x) * kParallax;
+    this.smoothParallax.y += (targetCamY - this.smoothParallax.y) * kParallax;
+
+    this.camera.position.x = this.pan.x + this.smoothParallax.x / this.zoom;
+    this.camera.position.y = this.pan.y + this.smoothParallax.y / this.zoom;
 
     // Travel camera dolly motion
     const target = this.settings.mode === 'TRAVEL' ? 1 : 0;
     this.travelBlend += (target - this.travelBlend) * (1 - Math.exp(-dt * 2.0));
     const dolly = 0.5 * (1 - Math.cos(tSec * 0.3)) * 1.5 * this.travelBlend;
     this.camera.position.z = this.baseCamZ - dolly;
-    this.camera.lookAt(0, 0, 0);
+    this.camera.lookAt(this.pan.x, this.pan.y, 0);
 
     // Render WebGL
     this.renderer.render(this.scene, this.camera);
@@ -791,10 +897,14 @@ export class ThreeParticleEngine implements ParticleEngine {
       activeMode: this.settings.mode,
       colorMode: this.settings.colorMode,
       pointer: { ...this.pointerState },
+      zoom: this.zoom,
+      panX: this.pan.x,
+      panY: this.pan.y,
       viewMatrix: new Float32Array(this.camera.matrixWorldInverse.elements),
       projectionMatrix: new Float32Array(this.camera.projectionMatrix.elements),
       viewProjectionMatrix: viewProjElements,
       cameraPosition: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+      imageAspect: this.imageAspect,
       trackers: computedTrackers,
       depthScale: this.settings.depthScale,
       noiseSpeed: this.settings.noiseSpeed,

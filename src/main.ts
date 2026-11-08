@@ -17,12 +17,23 @@ import type {
   OverlayName,
   ParticleSettings,
 } from './types';
-import { UIManager } from './ui';
+import { GestureController, UIManager } from './ui';
+
+const isCoarse =
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(pointer: coarse)').matches;
+
+const defaultQuality: 'STANDARD' | 'HIGH' | 'ULTRA' = isCoarse
+  ? 'STANDARD'
+  : 'HIGH';
 
 export const DEFAULT_SETTINGS: ParticleSettings = {
-  particleCount: 200_000,
-  pointSize: 1.3,
+  particleCount: isCoarse ? 200_000 : 450_000,
+  pointSize: 1.0,
   depthScale: 0.3,
+  intensity: 1.35,
+  quality: defaultQuality,
   noiseSpeed: 0.6,
   noiseFrequency: 1.2,
   noiseStrength: 0.8,
@@ -43,6 +54,7 @@ export const DEFAULT_SETTINGS: ParticleSettings = {
     linkDistanceThreshold: 0.05,
     scanSpeed: 1.0,
     trailFade: 0.15,
+    cropMarks: true,
   },
   adaptiveFPS: true,
 };
@@ -99,8 +111,8 @@ class DriftApp {
   private overlayRenderer!: OverlayRendererImpl;
   private videoRecorder!: VideoRecorder;
   private uiManager!: UIManager;
+  private gestureController!: GestureController;
 
-  private isPointerDown: boolean = false;
   private animationFrameId: number | null = null;
   private useProceduralFallbackOnly: boolean = false;
 
@@ -157,10 +169,28 @@ class DriftApp {
       onRetryModel: () => this.initDepthModel(),
       onUseProceduralFallback: () => this.enableProceduralFallback(),
       onToggleDepthView: () => this.toggleDepthDebugView(),
+      onToggleHandTool: () => this.gestureController.toggleHandTool(),
+      onZoomIn: () => this.particleEngine.zoomAt(1.25, 0, 0),
+      onZoomOut: () => this.particleEngine.zoomAt(0.8, 0, 0),
+      onZoomReset: () => this.particleEngine.resetView(),
+    });
+
+    // Initialize Viewport Gestures & Interaction Controller
+    this.gestureController = new GestureController({
+      canvas: this.particleCanvas,
+      engine: this.particleEngine,
+      getMode: () => this.state.settings.mode,
+      isDrawActive: () => !!this.state.settings.overlays.active.DRAW,
+      onDrawPoint: (clientX, clientY) => {
+        this.overlayRenderer.addDrawPoint(clientX, clientY);
+        this.particleEngine.addDrawImpulse(this.overlayRenderer.getDrawPoints());
+      },
+      onHandToolChange: (active) => {
+        this.uiManager.setHandToolActive(active);
+      },
     });
 
     this.setupWindowEvents();
-    this.setupPointerEvents();
     this.setupOrientationEvents();
     this.setupKeyboardEvents();
 
@@ -403,6 +433,7 @@ class DriftApp {
     this.state.settings.mode = mode;
     this.particleEngine.setMode(mode, 500);
     this.uiManager.update({ settings: this.state.settings });
+    this.gestureController?.updateCursor();
   }
 
   /**
@@ -426,6 +457,7 @@ class DriftApp {
     }
 
     this.uiManager.update({ settings: this.state.settings });
+    this.gestureController?.updateCursor();
   }
 
   /**
@@ -498,47 +530,6 @@ class DriftApp {
       return this.state.images[this.state.currentIndex];
     }
     return undefined;
-  }
-
-  private setupPointerEvents(): void {
-    const onPointerMove = (e: PointerEvent) => {
-      this.particleEngine.setPointer(e.clientX, e.clientY, this.isPointerDown);
-
-      if (this.isPointerDown && this.state.settings.overlays.active.DRAW) {
-        this.overlayRenderer.addDrawPoint(e.clientX, e.clientY);
-        this.particleEngine.addDrawImpulse(this.overlayRenderer.getDrawPoints());
-      }
-    };
-
-    const onPointerDown = (e: PointerEvent) => {
-      // Don't interact if clicked on UI layer elements
-      const target = e.target as HTMLElement;
-      if (target && target.closest('.ui-layer') && !target.classList.contains('canvas-layer')) {
-        return;
-      }
-
-      this.isPointerDown = true;
-      this.particleEngine.setPointer(e.clientX, e.clientY, true);
-
-      if (this.state.settings.overlays.active.DRAW) {
-        this.overlayRenderer.addDrawPoint(e.clientX, e.clientY);
-        this.particleEngine.addDrawImpulse(this.overlayRenderer.getDrawPoints());
-      }
-    };
-
-    const onPointerUp = (e: PointerEvent) => {
-      this.isPointerDown = false;
-      this.particleEngine.setPointer(e.clientX, e.clientY, false);
-    };
-
-    window.addEventListener('pointermove', onPointerMove, { passive: true });
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
-
-    // Prevent pull-to-refresh on mobile canvas
-    this.particleCanvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
-    this.particleCanvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
   }
 
   private setupOrientationEvents(): void {
@@ -661,6 +652,7 @@ class DriftApp {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
     }
+    this.gestureController.dispose();
     this.videoRecorder.dispose();
     this.particleEngine.dispose();
     this.overlayRenderer.dispose();

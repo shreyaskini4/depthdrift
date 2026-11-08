@@ -33,6 +33,8 @@ uniform float uImpulseStrength;
 uniform vec3 uBurst;          // (x, y, startTimeSec) of the last splash burst
 uniform vec3 uAttractor;      // (x, y, amount 0..1) smoothed attractor for GATHER/SWARM
 uniform int uDebug;
+uniform float uZoom;
+uniform float uIntensity;
 
 // Custom Attributes
 attribute vec3 sourceColor;
@@ -308,15 +310,16 @@ void main() {
   gl_Position = projectionMatrix * mvPosition;
 
   // Adaptive Point Size with distance attenuation and DPI scaling
-  float pSize = uPointSize * uPixelRatio * (0.8 + sal * 0.5);
+  float zs = pow(max(uZoom, 0.05), 0.65);
+  float pSize = uPointSize * uPixelRatio * (0.8 + sal * 0.5) * zs;
   float viewDepth = max(0.15, -mvPosition.z);
   gl_PointSize = clamp(pSize * (2.0 / viewDepth),
-                       1.0 * uPixelRatio, 24.0 * uPixelRatio);
+                       0.7 * uPixelRatio, 48.0 * uPixelRatio);
 
   // Color Mode processing
   if (uColorMode == 0) {
     // TRUE: Crisp stipple print look without artificial luminance floor
-    vec3 c = clamp((baseColor - 0.04) * 1.12, 0.0, 1.0);
+    vec3 c = clamp((baseColor - 0.04) * 1.12, 0.0, 1.0) * uIntensity;
     vColor = c;
     vAlpha = 0.9;
   } else if (uColorMode == 1) {
@@ -325,6 +328,7 @@ void main() {
     float invLuma = dot(inverted, vec3(0.299, 0.587, 0.114));
     vec3 saturatedInv = mix(vec3(invLuma), inverted, 1.12);
     vColor = max(vec3(0.16, 0.16, 0.20), clamp(saturatedInv, 0.0, 1.0));
+    vColor *= uIntensity;
     vAlpha = 0.45;
   } else {
     // ON_WHITE: High-contrast ink on white background
@@ -333,6 +337,7 @@ void main() {
     vec3 ink = mix(vec3(0.03, 0.04, 0.06), vec3(0.38, 0.40, 0.45), luma);
     vColor = ink;
     vAlpha = mix(0.90, 0.50, luma);
+    vAlpha = clamp(vAlpha * uIntensity, 0.0, 1.0);
   }
 
   vAlpha *= modeFade * nearFade;
@@ -372,7 +377,7 @@ void main() {
   }
 
   // Crisp circular edge with subtle subpixel anti-aliasing
-  float edgeAlpha = 1.0 - smoothstep(0.42, 0.5, dist);
+  float edgeAlpha = 1.0 - smoothstep(0.38, 0.5, dist);
   float alpha = vAlpha * edgeAlpha;
 
   gl_FragColor = vec4(vColor, alpha);

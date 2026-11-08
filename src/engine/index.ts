@@ -11,6 +11,7 @@ export {
   createDefaultParticles,
   extractImageData,
   MAX_PARTICLE_CAPACITY,
+  sampleColorBilinear,
   sampleDepth,
   sampleImageAndDepth,
   shuffleParticles,

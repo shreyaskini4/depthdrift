@@ -19,6 +19,8 @@ export type OverlayName = 'LINKS' | 'TRACKERS' | 'SCAN' | 'TRAILS' | 'MARKS' | '
 
 export type ColorMode = 'TRUE' | 'NEGATIVE' | 'ON_WHITE';
 
+export type QualityLevel = 'STANDARD' | 'HIGH' | 'ULTRA';
+
 export interface OverlaySettings {
   /** Active overlays toggled on/off */
   active: Record<OverlayName, boolean>;
@@ -32,6 +34,8 @@ export interface OverlaySettings {
   scanSpeed: number;
   /** Trails persistence / alpha fade factor (0.05 to 0.5) */
   trailFade: number;
+  /** Whether image bounding crop marks are rendered */
+  cropMarks?: boolean;
 }
 
 export interface ParticleSettings {
@@ -41,6 +45,10 @@ export interface ParticleSettings {
   pointSize: number;
   /** Max depth extrusion along Z axis (default: 0.3) */
   depthScale: number;
+  /** Luminance / color intensity multiplier (default: 1.35) */
+  intensity: number;
+  /** Rendering quality preset (default: 'HIGH'; 'STANDARD' on touch/coarse pointers) */
+  quality: 'STANDARD' | 'HIGH' | 'ULTRA';
   /** Turbulence / noise animation speed */
   noiseSpeed: number;
   /** Noise spatial frequency */
@@ -93,6 +101,12 @@ export interface EngineRenderState {
   colorMode: ColorMode;
   /** Pointer position in canvas space [0..width, 0..height] */
   pointer: { x: number; y: number; isDown: boolean; vx: number; vy: number };
+  /** Camera zoom factor (1 = fit / 100%, range [0.5..12]) */
+  zoom: number;
+  /** Horizontal pan offset in physical pixels */
+  panX: number;
+  /** Vertical pan offset in physical pixels */
+  panY: number;
   /** Camera projection and view matrix (4x4 Float32Array or array) */
   viewMatrix: Float32Array;
   projectionMatrix: Float32Array;
@@ -100,6 +114,8 @@ export interface EngineRenderState {
   viewProjectionMatrix?: Float32Array;
   /** Camera position in 3D world space */
   cameraPosition: [number, number, number];
+  /** Fitted image aspect ratio (width / height) */
+  imageAspect?: number;
   /** Sampled salient points for overlays (trackers, markers, links) in normalized [0..1] canvas coordinates */
   trackers: TrackerPoint[];
   /** Motion and simulation parameters for overlay synchronization */
@@ -179,6 +195,11 @@ export interface ParticleEngine {
   setOrientation(pitch: number, roll: number): void;
   addDrawImpulse(points: UserDrawingPoint[]): void;
   resize(width: number, height: number, dpr?: number): void;
+  zoomAt(factor: number, ndcX?: number, ndcY?: number): void; // ndc -1..1, y up
+  setZoom(zoom: number): void;
+  panByPixels(dx: number, dy: number): void;
+  resetView(): void;
+  getView(): { zoom: number; panX: number; panY: number };
   render(t?: number): EngineRenderState;
   getRenderState(): EngineRenderState;
   setDebug?(debug: boolean): void;
