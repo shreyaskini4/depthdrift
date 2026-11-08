@@ -74,6 +74,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   private pointerWorld = new THREE.Vector2(0, 0);
   private lastPointerWorld = new THREE.Vector2(0, 0);
   private lastPointerTime: number = 0;
+  private lastBurstAt: number = -100;
   private orientation = new THREE.Vector2(0, 0);
   private impulseStrength: number = 0.0;
   private impulseCenter = new THREE.Vector2(0, 0);
@@ -91,6 +92,8 @@ export class ThreeParticleEngine implements ParticleEngine {
   private lastDepth: DepthResult | null = null;
   private imageAspect: number = 1.0;
   private cameraDistance: number = 2.0;
+  private baseCamZ: number = 2.0;
+  private travelBlend: number = 0;
 
   // Render timing & caching
   private startMs: number = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -203,9 +206,11 @@ export class ThreeParticleEngine implements ParticleEngine {
         uPrevMode: { value: MODE_INDICES[this.settings.mode] },
         uModeTransition: { value: 1.0 },
         uColorMode: { value: COLOR_MODE_INDICES[this.settings.colorMode] },
-        uPointer: { value: new THREE.Vector3(0, 0, 0) },
+        uPointer: { value: new THREE.Vector3(999, 999, 0) },
         uPointerVelocity: { value: new THREE.Vector2(0, 0) },
         uPointerRadius: { value: 0.5 },
+        uBurst: { value: new THREE.Vector3(0, 0, -100) },
+        uAttractor: { value: new THREE.Vector3(0, 0, 0.6) },
         uOrientation: { value: new THREE.Vector2(0, 0) },
         uPixelRatio: { value: this.dpr },
         uMorphProgress: { value: 0.0 },
@@ -253,7 +258,8 @@ export class ThreeParticleEngine implements ParticleEngine {
     const distForWidth = imgAspect / (2 * halfFovTan * viewportAspect * targetCoverage);
 
     this.cameraDistance = Math.max(distForHeight, distForWidth);
-    this.camera.position.z = this.cameraDistance;
+    this.baseCamZ = this.cameraDistance;
+    this.camera.position.z = this.baseCamZ;
   }
 
   private updateClearColor(colorMode: ColorMode): void {
@@ -268,6 +274,12 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.material.blendEquation = THREE.AddEquation;
     }
     this.material.needsUpdate = true;
+  }
+
+  private triggerBurst(x: number, y: number): void {
+    const t = (performance.now() - this.startMs) / 1000;
+    this.material.uniforms.uBurst.value.set(x, y, t);
+    this.lastBurstAt = t;
   }
 
   private applySampledData(data: SampledParticles, morph: boolean = true): void {
@@ -470,6 +482,10 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.prevMode = this.settings.mode;
     this.settings.mode = mode;
 
+    if (mode === 'SPLASH') {
+      this.triggerBurst(0, 0);
+    }
+
     this.modeTransitionStartTime = performance.now();
     this.modeTransitionDuration = Math.max(100, transitionDurationMs);
 
@@ -485,6 +501,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   }
 
   public setPointer(x: number, y: number, isDown: boolean): void {
+    const pressed = isDown && !this.pointerState.isDown;
     this.pointerState.x = x;
     this.pointerState.y = y;
     this.pointerState.isDown = isDown;
@@ -499,6 +516,10 @@ export class ThreeParticleEngine implements ParticleEngine {
     const distance = -this.camera.position.z / dir.z;
     const worldX = this.camera.position.x + dir.x * distance;
     const worldY = this.camera.position.y + dir.y * distance;
+
+    if (pressed && this.settings.mode === 'SPLASH') {
+      this.triggerBurst(worldX, worldY);
+    }
 
     const now = performance.now();
     const dt = Math.max(0.001, (now - this.lastPointerTime) / 1000);
@@ -578,6 +599,35 @@ export class ThreeParticleEngine implements ParticleEngine {
     const dt = this.lastTime >= 0 ? Math.max(0.001, Math.min(0.2, tSec - this.lastTime)) : 0.016;
     this.lastTime = tSec;
 
+    // 1. Velocity decay
+    const dec = Math.exp(-dt * 6);
+    this.pointerState.vx *= dec;
+    this.pointerState.vy *= dec;
+    this.material.uniforms.uPointerVelocity.value.set(this.pointerState.vx, this.pointerState.vy);
+
+    // 2. Splash auto-burst
+    if (this.settings.mode === 'SPLASH' && tSec - this.lastBurstAt > 6) {
+      this.triggerBurst((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.4);
+    }
+
+    // 3. Attractor smoothing
+    const recent = this.lastPointerTime > 0 && (performance.now() - this.lastPointerTime < 2500);
+    let tx: number, ty: number, amt: number;
+    if (this.pointerState.isDown || recent) {
+      tx = this.pointerWorld.x;
+      ty = this.pointerWorld.y;
+      amt = this.pointerState.isDown ? 1.0 : 0.8;
+    } else {
+      tx = 0.28 * Math.sin(tSec * 0.4);
+      ty = 0.2 * Math.cos(tSec * 0.33);
+      amt = 0.6;
+    }
+    const k = 1 - Math.exp(-dt * 3.0);
+    const att = this.material.uniforms.uAttractor.value;
+    att.x += (tx - att.x) * k;
+    att.y += (ty - att.y) * k;
+    att.z += (amt - att.z) * k;
+
     // Adaptive FPS regulation
     const { fps, effectiveParticleCount } = this.fpsRegulator.update(dt);
     const drawCount = Math.max(1, Math.min(this.currentDataCount, effectiveParticleCount));
@@ -642,7 +692,12 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     this.camera.position.x += (targetCamX - this.camera.position.x) * 0.05;
     this.camera.position.y += (targetCamY - this.camera.position.y) * 0.05;
-    this.camera.position.z = this.cameraDistance;
+
+    // Travel camera dolly motion
+    const target = this.settings.mode === 'TRAVEL' ? 1 : 0;
+    this.travelBlend += (target - this.travelBlend) * (1 - Math.exp(-dt * 2.0));
+    const dolly = 0.5 * (1 - Math.cos(tSec * 0.3)) * 1.5 * this.travelBlend;
+    this.camera.position.z = this.baseCamZ - dolly;
     this.camera.lookAt(0, 0, 0);
 
     // Render WebGL
@@ -676,56 +731,63 @@ export class ThreeParticleEngine implements ParticleEngine {
     };
 
     // Transform salient tracker points with mode displacement to normalized [0..1] canvas coordinates
+    // Suppress trackers in TRAVEL mode or when non-DEPTH travel dolly is blending/active
+    const hideTrackers =
+      this.settings.mode === 'TRAVEL' ||
+      (this.settings.mode !== 'DEPTH' && this.travelBlend > 0.05);
     const computedTrackers: TrackerPoint[] = [];
-    const numTrackers = this.baseTrackers.length;
 
-    for (let i = 0; i < numTrackers; i++) {
-      const trk = this.baseTrackers[i];
-      const seed = trk.seed ?? ((trk.id * 0.1337 + 0.1) % 1.0);
-      const sal = trk.salience ?? trk.intensity;
+    if (!hideTrackers) {
+      const numTrackers = this.baseTrackers.length;
 
-      // Displaced 3D world position matching particle vertex shader
-      const [wx, wy, wz] = computeTrackerWorldPosition(
-        trk.baseX,
-        trk.baseY,
-        trk.rawDepth,
-        seed,
-        sal,
-        dispParams
-      );
+      for (let i = 0; i < numTrackers; i++) {
+        const trk = this.baseTrackers[i];
+        const seed = trk.seed ?? ((trk.id * 0.1337 + 0.1) % 1.0);
+        const sal = trk.salience ?? trk.intensity;
 
-      this.tempVec.set(wx, wy, wz);
-      this.tempVec.project(this.camera);
+        // Displaced 3D world position matching particle vertex shader
+        const [wx, wy, wz] = computeTrackerWorldPosition(
+          trk.baseX,
+          trk.baseY,
+          trk.rawDepth,
+          seed,
+          sal,
+          dispParams
+        );
 
-      // Filter out points behind camera (Three.js NDC z > 1.0)
-      if (this.tempVec.z > 1.0) continue;
+        this.tempVec.set(wx, wy, wz);
+        this.tempVec.project(this.camera);
 
-      // Normalized screen coordinates
-      const screenX = (this.tempVec.x + 1.0) * 0.5;
-      const screenY = (1.0 - this.tempVec.y) * 0.5;
+        // Filter out points behind camera (Three.js NDC z > 1.0)
+        if (this.tempVec.z > 1.0) continue;
 
-      // Filter out points out of frustum [-0.15, 1.15]
-      if (screenX < -0.15 || screenX > 1.15 || screenY < -0.15 || screenY > 1.15) {
-        continue;
+        // Normalized screen coordinates
+        const screenX = (this.tempVec.x + 1.0) * 0.5;
+        const screenY = (1.0 - this.tempVec.y) * 0.5;
+
+        // Filter out points out of frustum [-0.15, 1.15]
+        if (screenX < -0.15 || screenX > 1.15 || screenY < -0.15 || screenY > 1.15) {
+          continue;
+        }
+
+        // Real normalized monocular depth [0.0..1.0] (1.0 = near, 0.0 = far)
+        const screenZ = trk.rawDepth;
+
+        computedTrackers.push({
+          id: trk.id,
+          x: screenX,
+          y: screenY,
+          z: screenZ,
+          intensity: trk.intensity,
+          label: trk.label,
+          baseX: trk.baseX,
+          baseY: trk.baseY,
+          baseZ: trk.baseZ,
+          rawDepth: trk.rawDepth,
+          seed,
+          salience: sal,
+        });
       }
-
-      // Real normalized monocular depth [0.0..1.0] (1.0 = near, 0.0 = far)
-      const screenZ = trk.rawDepth;
-
-      computedTrackers.push({
-        id: trk.id,
-        x: screenX,
-        y: screenY,
-        z: screenZ,
-        intensity: trk.intensity,
-        label: trk.label,
-        baseX: trk.baseX,
-        baseY: trk.baseY,
-        baseZ: trk.baseZ,
-        rawDepth: trk.rawDepth,
-        seed,
-        salience: sal,
-      });
     }
 
     this.latestRenderState = {
@@ -763,6 +825,15 @@ export class ThreeParticleEngine implements ParticleEngine {
 
   public getRenderState(): EngineRenderState {
     if (this.latestRenderState) {
+      if (
+        this.settings.mode === 'TRAVEL' ||
+        (this.settings.mode !== 'DEPTH' && this.travelBlend > 0.05)
+      ) {
+        return {
+          ...this.latestRenderState,
+          trackers: [],
+        };
+      }
       return this.latestRenderState;
     }
     return this.render();

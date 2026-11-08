@@ -22,7 +22,7 @@ uniform int uMode;
 uniform int uPrevMode;
 uniform float uModeTransition;
 uniform int uColorMode;
-uniform vec3 uPointer;        // (x, y, isDown)
+uniform vec3 uPointer;        // (x, y, isDown) default: (999.0, 999.0, 0.0)
 uniform vec2 uPointerVelocity;
 uniform float uPointerRadius;
 uniform vec2 uOrientation;    // (pitch, roll)
@@ -30,6 +30,8 @@ uniform float uPixelRatio;
 uniform float uMorphProgress;
 uniform vec2 uImpulseCenter;
 uniform float uImpulseStrength;
+uniform vec3 uBurst;          // (x, y, startTimeSec) of the last splash burst
+uniform vec3 uAttractor;      // (x, y, amount 0..1) smoothed attractor for GATHER/SWARM
 uniform int uDebug;
 
 // Custom Attributes
@@ -124,42 +126,61 @@ vec3 curlNoise(vec3 p) {
   return vec3(n2 - n3, n3 - n1, n1 - n2);
 }
 
-// Mode 0: DRIFT - organic floating turbulence
+float gFade = 1.0;   // per-particle alpha multiplier written by each mode
+float gSeed2 = 0.5;  // randomSeed.y, set at the top of main()
+
+float lifeFade(float ph, float fadeIn, float fadeOutStart) {
+  return smoothstep(0.0, fadeIn, ph) * (1.0 - smoothstep(fadeOutStart, 1.0, ph));
+}
+
+// DRIFT: ~45% of particles lift off the image, flow away on a wind with
+// curl turbulence, fade out, and fade back in at home. The rest stay put.
 vec3 computeDrift(vec3 p, float seed, float sal, float t) {
-  vec3 np = p * uNoiseFrequency + vec3(seed * 2.5, t * uNoiseSpeed * 0.4, seed * 1.5);
-  vec3 curl = curlNoise(np);
-  float zFloat = sin(t * uNoiseSpeed * 1.5 + p.x * 4.0 + p.y * 3.0 + seed * 6.28) * 0.05;
-  float salFactor = 1.0 + (1.0 - sal) * 0.7;
-  return curl * uNoiseStrength * 0.15 * salFactor + vec3(0.0, 0.0, zFloat);
+  gFade = 1.0;
+  vec3 idle = curlNoise(vec3(p.xy * uNoiseFrequency, t * 0.2 + seed * 5.0)) * 0.012;
+  if (gSeed2 > 0.45) return idle;
+  float ph = fract(t * (0.04 + uNoiseSpeed * 0.10) + seed);
+  float travel = pow(ph, 1.4);
+  float reach = (0.5 + uNoiseStrength * 0.9) * (1.0 - 0.4 * sal);
+  vec3 wind = vec3(0.9, 0.28, 0.22);
+  vec3 turb = curlNoise(vec3(p.xy * uNoiseFrequency + wind.xy * travel * 0.6,
+                             t * 0.18 + gSeed2 * 4.0));
+  gFade = lifeFade(ph, 0.08, 0.35);
+  return (wind + turb * 0.8) * travel * reach + idle;
 }
 
-// Mode 1: SPLASH - explosive shockwave scatter
+// SPLASH: event-driven shockwave from uBurst. Each particle is kicked
+// outward when the front reaches it, then eases back home.
 vec3 computeSplash(vec3 p, float seed, float sal, float t) {
-  vec2 diff = p.xy - uPointer.xy;
-  float dist = length(diff);
-  vec2 dir = dist > 0.001 ? normalize(diff) : vec2(0.0, 1.0);
-
-  float wave = sin(max(0.0, dist * 12.0 - t * 5.0)) * exp(-dist * 2.5);
-  float impulse = (1.0 - smoothstep(0.0, 1.0, dist)) * uSplashStrength;
-
-  vec3 burst = vec3(dir * (wave * 0.25 + impulse * 0.4), wave * 0.5 + impulse * 0.3);
-  burst += curlNoise(p * 2.5 + t * 0.8) * impulse * 0.2;
-  return burst;
+  gFade = 1.0;
+  float age = t - uBurst.z;
+  if (age < 0.0 || age > 8.0) return vec3(0.0);
+  vec2 diff = p.xy - uBurst.xy;
+  float d = length(diff);
+  vec2 dir = d > 1e-4 ? diff / d : vec2(0.0, 1.0);
+  float tau = age - d / 1.6;
+  if (tau <= 0.0) return vec3(0.0);
+  float k = 1.4;
+  float f = tau * k * exp(1.0 - tau * k);
+  float amp = uSplashStrength * (0.7 + 0.6 * seed) / (1.0 + d * 1.2);
+  vec2 perp = vec2(-dir.y, dir.x);
+  vec2 xy = dir * (0.32 * amp * f) + perp * (0.06 * amp * f * (seed - 0.5) * 2.0);
+  gFade = 1.0 - 0.3 * clamp(f, 0.0, 1.0);
+  return vec3(xy, 0.45 * amp * f);
 }
 
-// Mode 2: GATHER - gravitational convergence & vortex
+// GATHER: particles are drawn toward the attractor with an orbital swirl.
 vec3 computeGather(vec3 p, float seed, float sal, float t) {
-  vec2 target = uPointer.z > 0.5 ? uPointer.xy : vec2(0.0);
-  vec2 toTarget = target - p.xy;
-  float dist = length(toTarget);
-  vec2 dir = dist > 0.001 ? normalize(toTarget) : vec2(0.0);
+  vec2 toT = uAttractor.xy - p.xy;
+  float dist = length(toT);
+  vec2 dir = toT / max(dist, 1e-4);
   vec2 perp = vec2(-dir.y, dir.x);
-
-  float pull = 1.0 - smoothstep(0.05, 2.0, dist);
-  float swirl = sin(dist * 7.0 - t * 4.0);
-  vec2 motion = dir * (pull * 0.5) + perp * (pull * swirl * 0.35);
-  float zPull = -pull * 0.2 + sin(t * 2.0 + dist * 6.0) * 0.06;
-  return vec3(motion, zPull);
+  float w = 1.0 - smoothstep(0.0, 1.9, dist);
+  float pull = w * w * (0.55 + 0.4 * seed) * uAttractor.z;
+  float swirl = pull * (0.4 + 0.3 * sin(seed * 6.2831 + t * 1.3)) * min(dist, 0.6);
+  float z = -pull * 0.2 + sin(t * 2.0 + seed * 6.2831) * 0.03 * pull;
+  gFade = 1.0 - 0.45 * pull;   // dim as they stack so additive blending doesn't blow out
+  return vec3(toT * pull + perp * swirl, z);
 }
 
 // Mode 3: DEPTH - stratified topographic relief extrusion
@@ -169,39 +190,47 @@ vec3 computeDepthMode(vec3 p, float dep, float seed, float sal, float t) {
   return vec3(0.0, 0.0, (steppedZ + slice));
 }
 
-// Mode 4: TRAVEL - starfield hyperspace flythrough
+// TRAVEL: exaggerate the depth relief (3x total). The ENGINE dollies the
+// camera through it (Task 3). Near particles fade out as they pass the camera.
 vec3 computeTravel(vec3 p, float seed, float sal, float t) {
-  float speed = (0.6 + seed * 0.8) * (uNoiseSpeed + 0.5);
-  float zSpan = 2.6;
-  float zOff = mod(p.z + t * speed, zSpan) - 1.5;
-  zOff = min(zOff, 1.1);
-  float expand = (zOff + 1.5) * 0.18;
-  return vec3(p.x * expand, p.y * expand, zOff - p.z);
+  gFade = 1.0;
+  vec3 sway = curlNoise(vec3(p.xy * 1.5, t * 0.2 + seed)) * 0.02;
+  return vec3(sway.xy, p.z * 2.0 + sway.z);
 }
 
-// Mode 5: SWARM - flocking orbital vortices
+// SWARM: coherent, bounded vortex around the attractor. Inner rings rotate
+// more (differential rotation), the swirl swells and unwinds, never shears away.
 vec3 computeSwarm(vec3 p, float seed, float sal, float t) {
-  vec2 center = uPointer.z > 0.5 ? uPointer.xy : vec2(0.0);
-  vec2 offset = p.xy - center;
-  float r = length(offset);
-  float angle = atan(offset.y, offset.x) + t * (1.5 + seed * 1.2);
-
-  float orbitR = r + sin(t * 2.5 + seed * 6.28) * 0.1 * uNoiseStrength;
-  vec2 swarmTarget = center + vec2(cos(angle), sin(angle)) * orbitR;
-  vec3 curl = curlNoise(p * 2.0 + t * 0.6) * 0.12;
-  return vec3(swarmTarget - p.xy, curl.z);
+  vec2 c = uAttractor.xy;
+  vec2 off = p.xy - c;
+  float r = length(off);
+  float fall = 1.0 - smoothstep(0.0, 1.8, r);
+  float spin = (1.1 + 0.9 * sin(t * 0.45)) * uAttractor.z;
+  float ang = spin * fall * (1.0 + (seed - 0.5) * 0.35);
+  float cs = cos(ang);
+  float sn = sin(ang);
+  vec2 rot = vec2(cs * off.x - sn * off.y, sn * off.x + cs * off.y);
+  float squeeze = 1.0 - 0.3 * fall * uAttractor.z * (0.5 + 0.5 * sin(t * 0.45 + 1.0));
+  vec3 turb = curlNoise(vec3(p.xy * 2.0, t * 0.4 + gSeed2 * 2.0)) * 0.05 * fall;
+  gFade = squeeze;
+  return vec3(c + rot * squeeze - p.xy + turb.xy,
+              turb.z + fall * 0.12 * sin(t * 1.2 + seed * 6.2831));
 }
 
-// Mode 6: MELT - downward liquid drip distortion
+// MELT: ~60% of particles sag downward with gravity, fade out, and reform
+// at the top of their column. No teleport pop.
 vec3 computeMelt(vec3 p, float seed, float sal, float t) {
-  float speed = (0.35 + (1.0 - sal) * 0.8 + seed * 0.5) * (uNoiseStrength + 0.3);
-  float drip = mod(t * speed + seed * 4.0, 2.0);
-  float yDisp = -pow(drip, 1.7) * 0.45;
-  float xDisp = sin(drip * 9.0 + seed * 6.28) * 0.04 * (1.0 - sal);
-  return vec3(xDisp, yDisp, -drip * 0.1);
+  gFade = 1.0;
+  if (gSeed2 > 0.6) return vec3(0.0);
+  float ph = fract(t * (0.07 + uNoiseStrength * 0.05) + seed);
+  float len = (0.55 + (1.0 - sal) * 0.9) * (0.6 + 0.8 * gSeed2);
+  float x = sin(ph * 7.0 + seed * 6.2831) * 0.03 * ph * (1.0 - sal);
+  gFade = lifeFade(ph, 0.06, 0.45);
+  return vec3(x, -(ph * ph) * len, -ph * 0.12);
 }
 
 vec3 getModeDisplacement(int mode, vec3 p, float dep, float seed, float sal, float t) {
+  gFade = 1.0;
   if (mode == 0) return computeDrift(p, seed, sal, t);
   if (mode == 1) return computeSplash(p, seed, sal, t);
   if (mode == 2) return computeGather(p, seed, sal, t);
@@ -219,14 +248,23 @@ void main() {
   float sal = mix(salience, targetSalience, uMorphProgress);
   float dep = mix(sourceDepth, targetDepth, uMorphProgress);
   float seed = randomSeed.x;
+  gSeed2 = randomSeed.y;
 
   // Apply base depth scale
   basePos.z = (dep - 0.5) * uDepthScale;
 
   // Mode displacement blending between previous mode and active mode
+  float fadePrev = 1.0;
+  vec3 dispPrev = vec3(0.0);
+  if (uModeTransition < 1.0) {      // skip the old mode once the blend is done
+    dispPrev = getModeDisplacement(uPrevMode, basePos, dep, seed, sal, uTime);
+    fadePrev = gFade;
+  }
   vec3 dispCurr = getModeDisplacement(uMode, basePos, dep, seed, sal, uTime);
-  vec3 dispPrev = getModeDisplacement(uPrevMode, basePos, dep, seed, sal, uTime);
-  vec3 modeDisp = mix(dispPrev, dispCurr, clamp(uModeTransition, 0.0, 1.0));
+  float fadeCurr = gFade;
+  float tm = clamp(uModeTransition, 0.0, 1.0);
+  vec3 modeDisp = mix(dispPrev, dispCurr, tm);
+  float modeFade = mix(fadePrev, fadeCurr, tm);
 
   // User interactive draw impulse
   vec3 impulseDisp = vec3(0.0);
@@ -259,11 +297,10 @@ void main() {
   // Transform to clip space
   vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
 
-  // Near plane safety guard:
-  // When camera is at [0, 0.1, 2.0] or dollying, ensure points are never behind or clipped by near plane (0.1)
-  if (mvPosition.z > -0.15) {
-    mvPosition.z = -0.15;
-  }
+  // Near plane safety guard
+  float viewZ = -mvPosition.z;
+  float nearFade = smoothstep(0.18, 0.6, viewZ);
+  if (mvPosition.z > -0.15) mvPosition.z = -0.15;
   gl_Position = projectionMatrix * mvPosition;
 
   // Adaptive Point Size with distance attenuation and DPI scaling
@@ -294,6 +331,8 @@ void main() {
     vColor = ink;
     vAlpha = mix(0.90, 0.50, luma);
   }
+
+  vAlpha *= modeFade * nearFade;
 
   // Debug mode override: flat bright neon cyan, fixed size 4.0 * uPixelRatio, alpha 1.0
   if (uDebug == 1) {
