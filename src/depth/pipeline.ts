@@ -2,7 +2,7 @@
  * Extensible Model Pipeline Architecture for Drift
  * 
  * Model Attribution & License Notice:
- * - Depth Anything V2 Small ONNX (quantized q8)
+ * - Depth Anything V2 Small ONNX (Quantized Q8 and FP16 WebGPU)
  *   Repository: onnx-community/Depth-Anything-V2-Small-ONNX
  *   Original Authors: Lihe Yang et al. (TikTok / ByteDance / Univ of Hong Kong)
  *   License: Apache License 2.0 (Apache-2.0)
@@ -15,7 +15,7 @@
  * - CompositeModelPipeline (orchestration with automatic fallback chains)
  */
 
-import * as ort from 'onnxruntime-web';
+import * as ort from 'onnxruntime-web/webgpu';
 import type {
   DepthProgressEvent,
   DepthResult,
@@ -28,9 +28,9 @@ import { preprocessImage } from './preprocess';
 import { postprocessDepthTensor } from './postprocess';
 import { createSyntheticDepth } from './synthetic';
 
-// Configure ONNX Runtime Web WASM binaries CDN paths
+// Configure ONNX Runtime Web local WASM binaries paths
 try {
-  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+  ort.env.wasm.wasmPaths = '/wasm/';
   ort.env.wasm.numThreads = typeof navigator !== 'undefined'
     ? Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 2) - 1))
     : 1;
@@ -39,17 +39,25 @@ try {
 }
 
 /**
- * Depth Anything V2 Small (Quantized Q8) configuration.
+ * Verified Hugging Face ONNX Model URLs for Depth Anything V2 Small.
+ * - WebGPU: FP16 ONNX weights
+ * - WASM: Q8 Quantized ONNX weights
+ */
+export const HF_MODEL_FP16_URL =
+  'https://huggingface.co/onnx-community/Depth-Anything-V2-Small-ONNX/resolve/main/onnx/model_fp16.onnx';
+export const HF_MODEL_Q8_URL =
+  'https://huggingface.co/onnx-community/Depth-Anything-V2-Small-ONNX/resolve/main/onnx/model_quantized.onnx';
+
+/**
+ * Depth Anything V2 Small configuration.
  * License: Apache-2.0
  */
 export const DEPTH_ANYTHING_V2_CONFIG: ModelConfig = {
   id: 'depth-anything-v2-small',
-  name: 'Depth Anything V2 Small (Quantized Q8)',
-  primaryUrl:
-    'https://huggingface.co/onnx-community/Depth-Anything-V2-Small-ONNX/resolve/main/onnx/model_quantized.onnx',
-  fallbackUrls: [
-    'https://huggingface.co/onnx-community/Depth-Anything-V2-Small-ONNX/resolve/main/onnx/model_q8.onnx',
-  ],
+  name: 'Depth Anything V2 Small',
+  primaryUrl: HF_MODEL_FP16_URL,
+  wasmUrl: HF_MODEL_Q8_URL,
+  fallbackUrls: [HF_MODEL_Q8_URL],
   license: 'Apache-2.0',
   licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   inputWidth: 518,
@@ -81,6 +89,7 @@ export const FAST_DEPTH_CONFIG: ModelConfig = {
 
 /**
  * Standard ONNX Runtime Depth Model Pipeline.
+ * Supports WebGPU (FP16) with resilient WASM (Q8) session recreation and inference retry.
  */
 export class ONNXModelPipeline implements ModelPipeline {
   public readonly id: string;
@@ -111,6 +120,60 @@ export class ONNXModelPipeline implements ModelPipeline {
     return this.ready && this.session !== null;
   }
 
+  private async createSessionForProvider(
+    targetProvider: 'webgpu' | 'wasm',
+    onProgress?: (event: DepthProgressEvent) => void
+  ): Promise<ort.InferenceSession> {
+    const isGpu = targetProvider === 'webgpu';
+    const modelUrl = isGpu ? this.config.primaryUrl : (this.config.wasmUrl || this.config.primaryUrl);
+
+    if (onProgress) {
+      onProgress({
+        stage: 'downloading',
+        progress: 10,
+        message: `Loading ${this.name} (${isGpu ? 'FP16 WebGPU' : 'Q8 WASM'})...`,
+      });
+    }
+
+    const { modelBuffer, externalData } = await this.cacheManager.getModelWithExternalData(
+      modelUrl,
+      (dl) => {
+        if (onProgress) {
+          onProgress({
+            stage: 'downloading',
+            progress: Math.min(85, Math.round(dl.percent * 0.85)),
+            message: `Downloading ${isGpu ? 'FP16' : 'Q8'} weights (${Math.round(dl.loaded / (1024 * 1024))} MB)...`,
+          });
+        }
+      }
+    );
+
+    if (onProgress) {
+      onProgress({
+        stage: 'compiling',
+        progress: 90,
+        message: `Compiling ONNX session with ${targetProvider.toUpperCase()} provider...`,
+      });
+    }
+
+    const sessionOptions: ort.InferenceSession.SessionOptions = {
+      graphOptimizationLevel: 'all',
+      enableCpuMemArena: true,
+      enableMemPattern: true,
+      executionMode: 'sequential',
+      executionProviders: [targetProvider],
+    };
+
+    if (externalData) {
+      sessionOptions.externalData = [externalData];
+    }
+
+    const session = await ort.InferenceSession.create(modelBuffer, sessionOptions);
+    this.activeProvider = targetProvider;
+    console.log(`[ONNXModelPipeline] Active execution provider: ${targetProvider.toUpperCase()} (${isGpu ? 'FP16' : 'Q8'})`);
+    return session;
+  }
+
   public async init(onProgress?: (event: DepthProgressEvent) => void): Promise<void> {
     if (this.isReady) {
       if (onProgress) {
@@ -119,86 +182,53 @@ export class ONNXModelPipeline implements ModelPipeline {
       return;
     }
 
-    // 1. Fetch / Retrieve model from cache
-    if (onProgress) {
-      onProgress({ stage: 'downloading', progress: 0, message: `Fetching model weights (${this.name})...` });
-    }
+    const canAttemptWebGPU = this.preferWebGPU && typeof navigator !== 'undefined' && 'gpu' in navigator && !!navigator.gpu;
 
-    const modelBuffer = await this.cacheManager.getOrFetch(
-      this.config.primaryUrl,
-      this.config.fallbackUrls,
-      (dl) => {
+    // Attempt 1: WebGPU execution provider with FP16 model
+    if (canAttemptWebGPU) {
+      try {
+        console.log('[ONNXModelPipeline] Attempting WebGPU initialization (FP16 model)...');
+        this.session = await this.createSessionForProvider('webgpu', onProgress);
+        this.ready = true;
         if (onProgress) {
           onProgress({
-            stage: 'downloading',
-            progress: dl.percent,
-            message: `Downloading ${this.name} (${Math.round(dl.loaded / (1024 * 1024))} MB${dl.total ? ' / ' + Math.round(dl.total / (1024 * 1024)) + ' MB' : ''})...`,
+            stage: 'ready',
+            progress: 100,
+            message: `${this.name} initialized with WebGPU provider (FP16).`,
           });
         }
-      }
-    );
-
-    // 2. Compile ONNX session with WebGPU -> WASM fallback
-    if (onProgress) {
-      onProgress({ stage: 'compiling', progress: 90, message: 'Creating ONNX session...' });
-    }
-
-    this.session = await this.createSessionWithFallback(modelBuffer);
-    this.ready = true;
-
-    if (onProgress) {
-      onProgress({
-        stage: 'ready',
-        progress: 100,
-        message: `${this.name} loaded successfully [provider: ${this.activeProvider}]`,
-      });
-    }
-  }
-
-  private async createSessionWithFallback(modelBuffer: ArrayBuffer): Promise<ort.InferenceSession> {
-    const sessionOptions: ort.InferenceSession.SessionOptions = {
-      graphOptimizationLevel: 'all',
-      enableCpuMemArena: true,
-      enableMemPattern: true,
-      executionMode: 'sequential',
-    };
-
-    // Attempt 1: WebGPU execution provider
-    if (this.preferWebGPU && typeof navigator !== 'undefined' && 'gpu' in navigator) {
-      try {
-        const session = await ort.InferenceSession.create(modelBuffer, {
-          ...sessionOptions,
-          executionProviders: ['webgpu'],
-        });
-        this.activeProvider = 'webgpu';
-        console.log(`[ONNXModelPipeline] Successfully initialized with WebGPU provider.`);
-        return session;
+        return;
       } catch (gpuError) {
-        console.warn('[ONNXModelPipeline] WebGPU session creation failed; falling back to WASM:', gpuError);
+        console.warn('[ONNXModelPipeline] WebGPU session creation failed; recreating session with WASM:', gpuError);
+        this.dispose();
       }
     }
 
-    // Attempt 2: WASM execution provider
+    // Attempt 2: WASM execution provider with Q8 model
     try {
-      const session = await ort.InferenceSession.create(modelBuffer, {
-        ...sessionOptions,
-        executionProviders: ['wasm'],
-      });
-      this.activeProvider = 'wasm';
-      console.log(`[ONNXModelPipeline] Successfully initialized with WASM provider.`);
-      return session;
+      console.log('[ONNXModelPipeline] Initializing with WASM provider (Q8 model)...');
+      this.session = await this.createSessionForProvider('wasm', onProgress);
+      this.ready = true;
+      if (onProgress) {
+        onProgress({
+          stage: 'ready',
+          progress: 100,
+          message: `${this.name} initialized with WASM provider (Q8).`,
+        });
+      }
     } catch (wasmError) {
       console.error('[ONNXModelPipeline] WASM session creation failed:', wasmError);
+      this.dispose();
       throw wasmError;
     }
   }
 
-  public async estimate(
+  private async runInference(
     imageBitmap: ImageBitmap,
     options?: { maxDimension?: number }
   ): Promise<DepthResult> {
     if (!this.session) {
-      throw new Error(`Pipeline ${this.name} is not initialized.`);
+      throw new Error(`Pipeline ${this.name} session is not active.`);
     }
 
     // 1. Preprocess Image
@@ -231,7 +261,41 @@ export class ONNXModelPipeline implements ModelPipeline {
       maxDimension: options?.maxDimension,
     });
 
+    result.provider = this.activeProvider;
+    result.source = 'model';
     return result;
+  }
+
+  public async estimate(
+    imageBitmap: ImageBitmap,
+    options?: { maxDimension?: number }
+  ): Promise<DepthResult> {
+    if (!this.session) {
+      throw new Error(`Pipeline ${this.name} is not initialized.`);
+    }
+
+    try {
+      return await this.runInference(imageBitmap, options);
+    } catch (inferenceErr) {
+      // On runtime failure during WebGPU inference, recreate session with WASM and retry before falling back to heuristic
+      if (this.activeProvider === 'webgpu') {
+        console.warn(
+          '[ONNXModelPipeline] Runtime failure during WebGPU inference; recreating session with WASM and retrying:',
+          inferenceErr
+        );
+        try {
+          this.dispose();
+          this.session = await this.createSessionForProvider('wasm');
+          this.ready = true;
+          return await this.runInference(imageBitmap, options);
+        } catch (wasmRetryErr) {
+          console.error('[ONNXModelPipeline] WASM retry after WebGPU failure also failed:', wasmRetryErr);
+          this.dispose();
+          throw wasmRetryErr;
+        }
+      }
+      throw inferenceErr;
+    }
   }
 
   public dispose(): void {
@@ -297,7 +361,10 @@ export class HeuristicModelPipeline implements ModelPipeline {
     ctx.drawImage(imageBitmap, 0, 0, targetW, targetH);
     const imgData = ctx.getImageData(0, 0, targetW, targetH);
 
-    return createSyntheticDepth(targetW, targetH, imgData);
+    const result = createSyntheticDepth(targetW, targetH, imgData);
+    result.provider = 'heuristic';
+    result.source = 'heuristic';
+    return result;
   }
 
   public dispose(): void {
@@ -307,7 +374,7 @@ export class HeuristicModelPipeline implements ModelPipeline {
 
 /**
  * Composite Pipeline with automatic fallback chain:
- * Primary Model -> Secondary Model -> Heuristic Offline Fallback.
+ * Primary Model (WebGPU FP16) -> WASM Retry (Q8) -> Heuristic Offline Fallback.
  */
 export class CompositeModelPipeline implements ModelPipeline {
   public readonly id = 'composite-depth-pipeline';
@@ -348,7 +415,7 @@ export class CompositeModelPipeline implements ModelPipeline {
         await pipeline.init(onProgress);
         this.activePipeline = pipeline;
         initialized = true;
-        console.log(`[CompositePipeline] Successfully initialized ${pipeline.name}.`);
+        console.log(`[CompositePipeline] Successfully initialized ${pipeline.name} [provider: ${pipeline.provider}].`);
         break;
       } catch (candidateErr) {
         console.warn(

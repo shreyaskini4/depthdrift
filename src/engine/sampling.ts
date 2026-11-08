@@ -15,6 +15,8 @@ export interface BaseTracker {
   rawDepth: number;
   intensity: number;
   label: string;
+  seed?: number;
+  salience?: number;
 }
 
 export interface SampledParticles {
@@ -28,7 +30,131 @@ export interface SampledParticles {
   count: number;
 }
 
+export interface SampleOptions {
+  count?: number;
+  targetCount?: number;
+}
+
 export const MAX_PARTICLE_CAPACITY = 200_000;
+
+/**
+ * Shuffles particle attributes in-place using the Fisher-Yates shuffle algorithm.
+ * All attribute arrays are permuted with an identical permutation so positions,
+ * colors, randomSeeds, saliences, and depths stay strictly linked.
+ */
+export function shuffleParticles(
+  positions: Float32Array,
+  colors: Float32Array,
+  randomSeeds: Float32Array,
+  saliences: Float32Array,
+  depths: Float32Array,
+  count?: number
+): void;
+export function shuffleParticles(particles: {
+  positions: Float32Array;
+  colors: Float32Array;
+  randomSeeds: Float32Array;
+  saliences: Float32Array;
+  depths: Float32Array;
+  count?: number;
+}): void;
+export function shuffleParticles(
+  first:
+    | {
+        positions: Float32Array;
+        colors: Float32Array;
+        randomSeeds: Float32Array;
+        saliences: Float32Array;
+        depths: Float32Array;
+        count?: number;
+      }
+    | Float32Array,
+  colorsArg?: Float32Array,
+  randomSeedsArg?: Float32Array,
+  saliencesArg?: Float32Array,
+  depthsArg?: Float32Array,
+  countArg?: number
+): void {
+  let positions: Float32Array;
+  let colors: Float32Array;
+  let randomSeeds: Float32Array;
+  let saliences: Float32Array;
+  let depths: Float32Array;
+  let n: number;
+
+  if (first instanceof Float32Array) {
+    positions = first;
+    colors = colorsArg!;
+    randomSeeds = randomSeedsArg!;
+    saliences = saliencesArg!;
+    depths = depthsArg!;
+    n = countArg !== undefined ? countArg : saliences.length;
+  } else {
+    positions = first.positions;
+    colors = first.colors;
+    randomSeeds = first.randomSeeds;
+    saliences = first.saliences;
+    depths = first.depths;
+    n = first.count !== undefined ? first.count : saliences.length;
+  }
+
+  if (n <= 1) return;
+
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    if (i === j) continue;
+
+    const i3 = i * 3;
+    const j3 = j * 3;
+
+    // Swap positions (stride 3)
+    let temp = positions[i3];
+    positions[i3] = positions[j3];
+    positions[j3] = temp;
+
+    temp = positions[i3 + 1];
+    positions[i3 + 1] = positions[j3 + 1];
+    positions[j3 + 1] = temp;
+
+    temp = positions[i3 + 2];
+    positions[i3 + 2] = positions[j3 + 2];
+    positions[j3 + 2] = temp;
+
+    // Swap colors (stride 3)
+    temp = colors[i3];
+    colors[i3] = colors[j3];
+    colors[j3] = temp;
+
+    temp = colors[i3 + 1];
+    colors[i3 + 1] = colors[j3 + 1];
+    colors[j3 + 1] = temp;
+
+    temp = colors[i3 + 2];
+    colors[i3 + 2] = colors[j3 + 2];
+    colors[j3 + 2] = temp;
+
+    // Swap randomSeeds (stride 2)
+    const i2 = i * 2;
+    const j2 = j * 2;
+    temp = randomSeeds[i2];
+    randomSeeds[i2] = randomSeeds[j2];
+    randomSeeds[j2] = temp;
+
+    temp = randomSeeds[i2 + 1];
+    randomSeeds[i2 + 1] = randomSeeds[j2 + 1];
+    randomSeeds[j2 + 1] = temp;
+
+    // Swap saliences (stride 1)
+    temp = saliences[i];
+    saliences[i] = saliences[j];
+    saliences[j] = temp;
+
+    // Swap depths (stride 1)
+    temp = depths[i];
+    depths[i] = depths[j];
+    depths[j] = temp;
+  }
+}
 
 /**
  * Extracts raw ImageData from HTMLCanvasElement, ImageBitmap, or ImageData.
@@ -99,8 +225,22 @@ export function sampleDepth(depth: DepthResult, u: number, v: number): number {
 export function sampleImageAndDepth(
   pixelsSource: HTMLCanvasElement | ImageBitmap | ImageData,
   depth: DepthResult,
-  targetCount: number = MAX_PARTICLE_CAPACITY
+  targetCountOrOptions: number | SampleOptions = MAX_PARTICLE_CAPACITY
 ): SampledParticles {
+  let targetCount = MAX_PARTICLE_CAPACITY;
+  if (typeof targetCountOrOptions === 'number') {
+    targetCount = targetCountOrOptions;
+  } else if (targetCountOrOptions && typeof targetCountOrOptions === 'object') {
+    if (typeof targetCountOrOptions.count === 'number') {
+      targetCount = targetCountOrOptions.count;
+    } else if (typeof targetCountOrOptions.targetCount === 'number') {
+      targetCount = targetCountOrOptions.targetCount;
+    }
+  }
+
+  if (!targetCount || targetCount <= 0) {
+    targetCount = MAX_PARTICLE_CAPACITY;
+  }
   const imgData = extractImageData(pixelsSource);
   const imgWidth = imgData.width;
   const imgHeight = imgData.height;
@@ -318,6 +458,8 @@ export function sampleImageAndDepth(
       rawDepth: dep,
       intensity: Math.max(0.05, Math.min(1.0, Math.round(c.sal * 100) / 100)),
       label: `${prefix}-${String(i + 1).padStart(2, '0')}`,
+      seed: ((c.u * 12.9898 + c.v * 78.233) % 1.0 + 1.0) % 1.0,
+      salience: c.sal,
     });
   }
 
@@ -435,6 +577,9 @@ export function sampleImageAndDepth(
     p++;
   }
 
+  // Shuffle particles using Fisher-Yates so lower particle counts thin evenly across the whole image
+  shuffleParticles(positions, colors, randomSeeds, saliences, depths, p);
+
   return {
     positions,
     colors,
@@ -470,13 +615,13 @@ export function createDefaultParticles(count: number = MAX_PARTICLE_CAPACITY): S
     const u = (col + (Math.random() - 0.5) * 0.7) / cols;
     const v = (row + (Math.random() - 0.5) * 0.7) / rows;
 
-    const x = (u - 0.5) * 1.4;
-    const y = (0.5 - v) * 1.4;
+    const x = (u - 0.5);
+    const y = (0.5 - v);
 
     // Mathematical ripple wave depth surface
     const r = Math.sqrt(x * x + y * y);
-    const wave1 = Math.sin(r * 14.0) * 0.25;
-    const wave2 = Math.cos(x * 8.0) * Math.sin(y * 8.0) * 0.15;
+    const wave1 = Math.sin(r * 18.0) * 0.25;
+    const wave2 = Math.cos(x * 10.0) * Math.sin(y * 10.0) * 0.15;
     const dep = Math.max(0.0, Math.min(1.0, 0.5 + wave1 + wave2));
 
     const i3 = i * 3;
@@ -548,9 +693,14 @@ export function createDefaultParticles(count: number = MAX_PARTICLE_CAPACITY): S
         rawDepth: cand.dep,
         intensity: Math.round(cand.sal * 100) / 100,
         label: `${prefix}-${String(id + 1).padStart(2, '0')}`,
+        seed: ((cand.x * 12.9898 + cand.y * 78.233) % 1.0 + 1.0) % 1.0,
+        salience: cand.sal,
       });
     }
   }
+
+  // Shuffle particles using Fisher-Yates so lower particle counts thin evenly
+  shuffleParticles(positions, colors, randomSeeds, saliences, depths, count);
 
   return {
     positions,

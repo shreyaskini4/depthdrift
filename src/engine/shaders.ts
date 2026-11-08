@@ -33,6 +33,7 @@ uniform float uImpulseStrength;
 uniform int uDebug;
 
 // Custom Attributes
+attribute vec3 sourceColor;
 attribute vec3 targetPosition;
 attribute vec3 targetColor;
 attribute vec2 randomSeed;
@@ -214,7 +215,7 @@ vec3 getModeDisplacement(int mode, vec3 p, float dep, float seed, float sal, flo
 void main() {
   // Interpolate between current and target image during morphing
   vec3 basePos = mix(position, targetPosition, uMorphProgress);
-  vec3 baseColor = mix(color, targetColor, uMorphProgress);
+  vec3 baseColor = mix(sourceColor, targetColor, uMorphProgress);
   float sal = mix(salience, targetSalience, uMorphProgress);
   float dep = mix(sourceDepth, targetDepth, uMorphProgress);
   float seed = randomSeed.x;
@@ -272,21 +273,26 @@ void main() {
 
   // Color Mode processing
   if (uColorMode == 0) {
-    // TRUE: Source image RGB with subtle luminance floor to prevent pure black from vanishing in AdditiveBlending
-    vColor = max(vec3(0.06), baseColor);
-    vAlpha = 0.95;
+    // TRUE: Source image RGB with enhanced chroma to retain vivid color and definition under additive accumulation
+    float luma = dot(baseColor, vec3(0.299, 0.587, 0.114));
+    vec3 saturated = mix(vec3(luma), baseColor, 1.15);
+    vColor = max(vec3(0.04), clamp(saturated, 0.0, 1.0));
+    // Reduced additive particle opacity: prevents excessive white burn / blowout across dense clusters
+    vAlpha = 0.42;
   } else if (uColorMode == 1) {
-    // NEGATIVE: Inverted colors with minimum contrast floor so inverted white doesn't vanish on dark background
+    // NEGATIVE: Inverted colors with tuned contrast floor so inverted dark/neon tones stay saturated without wash-out
     vec3 inverted = vec3(1.0) - baseColor;
-    vColor = max(vec3(0.22, 0.22, 0.26), inverted);
-    vAlpha = 0.95;
+    float invLuma = dot(inverted, vec3(0.299, 0.587, 0.114));
+    vec3 saturatedInv = mix(vec3(invLuma), inverted, 1.12);
+    vColor = max(vec3(0.16, 0.16, 0.20), clamp(saturatedInv, 0.0, 1.0));
+    vAlpha = 0.45;
   } else {
     // ON_WHITE: High-contrast ink on white background
     float luma = dot(baseColor, vec3(0.299, 0.587, 0.114));
     // Dark ink pigment mapping: dark areas get deep charcoal/black, light areas get soft graphite
     vec3 ink = mix(vec3(0.03, 0.04, 0.06), vec3(0.38, 0.40, 0.45), luma);
     vColor = ink;
-    vAlpha = mix(0.95, 0.55, luma);
+    vAlpha = mix(0.90, 0.50, luma);
   }
 
   // Debug mode override: flat bright neon cyan, fixed size 4.0 * uPixelRatio, alpha 1.0
@@ -323,8 +329,8 @@ void main() {
     return;
   }
 
-  // Crisp yet soft circular falloff from center to edge (edge0 < edge1)
-  float edgeAlpha = 1.0 - smoothstep(0.35, 0.5, dist);
+  // Crisp yet smooth circular falloff from center to edge to avoid harsh additive overlap hotspots
+  float edgeAlpha = smoothstep(0.5, 0.05, dist);
   float alpha = vAlpha * edgeAlpha;
 
   gl_FragColor = vec4(vColor, alpha);

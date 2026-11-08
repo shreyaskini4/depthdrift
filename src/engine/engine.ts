@@ -21,8 +21,13 @@ import {
   MAX_PARTICLE_CAPACITY,
   sampleImageAndDepth,
   type SampledParticles,
+  type SampleOptions,
 } from './sampling';
 import { PARTICLE_FRAGMENT_SHADER, PARTICLE_VERTEX_SHADER } from './shaders';
+import {
+  computeTrackerWorldPosition,
+  type TrackerDisplacementParams,
+} from '../overlays/trackerDisplacement';
 
 export const MODE_INDICES: Record<ModeName, number> = {
   DRIFT: 0,
@@ -82,9 +87,14 @@ export class ThreeParticleEngine implements ParticleEngine {
   private morphStartTime: number = 0;
   private morphDuration: number = 800;
   private currentDataCount: number = MAX_PARTICLE_CAPACITY;
+  private lastPixels: HTMLCanvasElement | ImageBitmap | ImageData | null = null;
+  private lastDepth: DepthResult | null = null;
+  private imageAspect: number = 1.0;
+  private cameraDistance: number = 2.0;
 
   // Render timing & caching
-  private lastTime: number = 0;
+  private startMs: number = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  private lastTime: number = -1;
   private latestRenderState: EngineRenderState | null = null;
   private tempVec = new THREE.Vector3();
 
@@ -99,7 +109,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.settings = {
       particleCount: initialSettings?.particleCount ?? 120_000,
       pointSize: initialSettings?.pointSize ?? 2.0,
-      depthScale: initialSettings?.depthScale ?? 1.0,
+      depthScale: initialSettings?.depthScale ?? 0.4,
       noiseSpeed: initialSettings?.noiseSpeed ?? 0.6,
       noiseFrequency: initialSettings?.noiseFrequency ?? 1.2,
       noiseStrength: initialSettings?.noiseStrength ?? 0.8,
@@ -147,7 +157,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 50);
-    this.camera.position.set(0, 0, 2.0);
+    this.updateCameraDistance();
     this.camera.lookAt(0, 0, 0);
 
     // Scene
@@ -169,7 +179,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.geometry.setAttribute('targetPosition', new THREE.BufferAttribute(targetPositions, 3));
-    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    this.geometry.setAttribute('sourceColor', new THREE.BufferAttribute(colors, 3));
     this.geometry.setAttribute('targetColor', new THREE.BufferAttribute(targetColors, 3));
     this.geometry.setAttribute('randomSeed', new THREE.BufferAttribute(randomSeeds, 2));
     this.geometry.setAttribute('salience', new THREE.BufferAttribute(saliences, 1));
@@ -207,7 +217,10 @@ export class ThreeParticleEngine implements ParticleEngine {
       depthTest: false,
       depthWrite: false,
       blending:
-        this.settings.colorMode === 'ON_WHITE' ? THREE.NormalBlending : THREE.AdditiveBlending,
+        this.settings.colorMode === 'ON_WHITE' ? THREE.NormalBlending : THREE.CustomBlending,
+      blendSrc: THREE.SrcAlphaFactor,
+      blendDst: THREE.OneFactor,
+      blendEquation: THREE.AddEquation,
     });
 
     this.points = new THREE.Points(this.geometry, this.material);
@@ -222,13 +235,37 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.updateClearColor(this.settings.colorMode);
   }
 
+  /**
+   * Computes camera distance dynamically so that the image fills ~85% of the viewport
+   * for ANY image aspect ratio and ANY viewport aspect ratio.
+   * Vertical FOV is 50 degrees.
+   */
+  private updateCameraDistance(): void {
+    if (!this.camera) return;
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    const halfFovTan = Math.tan(fovRad / 2);
+    const viewportAspect = Math.max(0.001, (this.width || 800) / Math.max(1, this.height || 600));
+    const targetCoverage = 0.85;
+
+    // Image height in particle coordinate space is 1.0 and image width is this.imageAspect
+    const imgAspect = Math.max(0.001, this.imageAspect || 1.0);
+    const distForHeight = 1.0 / (2 * halfFovTan * targetCoverage);
+    const distForWidth = imgAspect / (2 * halfFovTan * viewportAspect * targetCoverage);
+
+    this.cameraDistance = Math.max(distForHeight, distForWidth);
+    this.camera.position.z = this.cameraDistance;
+  }
+
   private updateClearColor(colorMode: ColorMode): void {
     if (colorMode === 'ON_WHITE') {
       this.renderer.setClearColor(0xfcfcfd, 1.0);
       this.material.blending = THREE.NormalBlending;
     } else {
       this.renderer.setClearColor(0x050506, 1.0);
-      this.material.blending = THREE.AdditiveBlending;
+      this.material.blending = THREE.CustomBlending;
+      this.material.blendSrc = THREE.SrcAlphaFactor;
+      this.material.blendDst = THREE.OneFactor;
+      this.material.blendEquation = THREE.AddEquation;
     }
     this.material.needsUpdate = true;
   }
@@ -236,7 +273,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   private applySampledData(data: SampledParticles, morph: boolean = true): void {
     const posAttr = this.geometry.getAttribute('position') as THREE.BufferAttribute;
     const tgtPosAttr = this.geometry.getAttribute('targetPosition') as THREE.BufferAttribute;
-    const colAttr = this.geometry.getAttribute('color') as THREE.BufferAttribute;
+    const colAttr = this.geometry.getAttribute('sourceColor') as THREE.BufferAttribute;
     const tgtColAttr = this.geometry.getAttribute('targetColor') as THREE.BufferAttribute;
     const seedAttr = this.geometry.getAttribute('randomSeed') as THREE.BufferAttribute;
     const salAttr = this.geometry.getAttribute('salience') as THREE.BufferAttribute;
@@ -307,15 +344,41 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.currentDataCount = count;
     }
 
+    if (data.aspect) {
+      this.imageAspect = data.aspect;
+      this.updateCameraDistance();
+    }
+
     this.baseTrackers = data.trackers;
+    if (this.baseTrackers.length > 0) {
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (let i = 0; i < this.baseTrackers.length; i++) {
+        const d = this.baseTrackers[i].rawDepth;
+        if (d < minZ) minZ = d;
+        if (d > maxZ) maxZ = d;
+      }
+      console.log(
+        `[Drift Engine] Trackers updated: count=${this.baseTrackers.length}, zMin=${minZ.toFixed(4)}, zMax=${maxZ.toFixed(4)}, zSpan=${(maxZ - minZ).toFixed(4)}`
+      );
+    }
     this.geometry.setDrawRange(0, count);
   }
 
   public setImage(
     pixels: HTMLCanvasElement | ImageBitmap | ImageData,
-    depth: DepthResult
+    depth: DepthResult,
+    options?: number | SampleOptions
   ): void {
-    const sampled = sampleImageAndDepth(pixels, depth, MAX_PARTICLE_CAPACITY);
+    this.lastPixels = pixels;
+    this.lastDepth = depth;
+    const targetCount =
+      typeof options === 'number'
+        ? options
+        : (options?.count ?? options?.targetCount ?? this.settings.particleCount);
+    const sampled = sampleImageAndDepth(pixels, depth, targetCount);
+    this.imageAspect = sampled.aspect || (pixels.width / Math.max(1, pixels.height)) || 1.0;
+    this.updateCameraDistance();
     this.applySampledData(sampled, true);
   }
 
@@ -324,6 +387,10 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.settings.particleCount = settings.particleCount;
       this.fpsRegulator.setTargetCount(settings.particleCount);
       const effectiveCount = this.fpsRegulator.getEffectiveParticleCount();
+      if (this.lastPixels && this.lastDepth && settings.particleCount > this.currentDataCount) {
+        const sampled = sampleImageAndDepth(this.lastPixels, this.lastDepth, settings.particleCount);
+        this.applySampledData(sampled, false);
+      }
       this.geometry.setDrawRange(0, effectiveCount);
     }
 
@@ -492,6 +559,8 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
 
+    this.updateCameraDistance();
+
     this.material.uniforms.uPixelRatio.value = targetDpr;
   }
 
@@ -500,9 +569,13 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.material.uniforms.uDebug.value = debug ? 1 : 0;
   }
 
-  public render(t: number): EngineRenderState {
-    const tSec = t > 1e6 ? t / 1000 : t;
-    const dt = this.lastTime > 0 ? Math.max(0.001, Math.min(0.2, tSec - this.lastTime)) : 0.016;
+  public render(_t?: number): EngineRenderState {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (this.startMs === 0) {
+      this.startMs = now;
+    }
+    const tSec = (now - this.startMs) / 1000;
+    const dt = this.lastTime >= 0 ? Math.max(0.001, Math.min(0.2, tSec - this.lastTime)) : 0.016;
     this.lastTime = tSec;
 
     // Adaptive FPS regulation
@@ -514,7 +587,6 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.material.uniforms.uTime.value = tSec;
 
     // Mode transition animation
-    const now = performance.now();
     if (this.material.uniforms.uModeTransition.value < 1.0) {
       const elapsed = now - this.modeTransitionStartTime;
       const progress = Math.min(1.0, elapsed / this.modeTransitionDuration);
@@ -531,7 +603,7 @@ export class ThreeParticleEngine implements ParticleEngine {
         // Morph complete: promote target to source
         const posAttr = this.geometry.getAttribute('position') as THREE.BufferAttribute;
         const tgtPosAttr = this.geometry.getAttribute('targetPosition') as THREE.BufferAttribute;
-        const colAttr = this.geometry.getAttribute('color') as THREE.BufferAttribute;
+        const colAttr = this.geometry.getAttribute('sourceColor') as THREE.BufferAttribute;
         const tgtColAttr = this.geometry.getAttribute('targetColor') as THREE.BufferAttribute;
         const salAttr = this.geometry.getAttribute('salience') as THREE.BufferAttribute;
         const tgtSalAttr = this.geometry.getAttribute('targetSalience') as THREE.BufferAttribute;
@@ -570,19 +642,59 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     this.camera.position.x += (targetCamX - this.camera.position.x) * 0.05;
     this.camera.position.y += (targetCamY - this.camera.position.y) * 0.05;
+    this.camera.position.z = this.cameraDistance;
     this.camera.lookAt(0, 0, 0);
 
     // Render WebGL
     this.renderer.render(this.scene, this.camera);
 
-    // Transform salient tracker points to normalized [0..1] canvas coordinates
+    // Combined view-projection matrix for overlay projection
+    const vpm = new THREE.Matrix4().multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse
+    );
+    const viewProjElements = new Float32Array(vpm.elements);
+
+    // Motion parameters for CPU tracker displacement
+    const dispParams: TrackerDisplacementParams = {
+      time: tSec,
+      depthScale: this.settings.depthScale,
+      noiseSpeed: this.settings.noiseSpeed,
+      noiseFrequency: this.settings.noiseFrequency,
+      noiseStrength: this.settings.noiseStrength,
+      splashStrength: this.settings.splashStrength,
+      mode: this.settings.mode,
+      prevMode: this.prevMode,
+      modeTransition: this.material.uniforms.uModeTransition.value,
+      pointerPos: [this.pointerWorld.x, this.pointerWorld.y],
+      pointerDown: this.pointerState.isDown,
+      pointerVelocity: [this.pointerState.vx, this.pointerState.vy],
+      pointerRadius: 0.5,
+      orientation: [this.orientation.x, this.orientation.y],
+      impulseCenter: [this.impulseCenter.x, this.impulseCenter.y],
+      impulseStrength: this.impulseStrength,
+    };
+
+    // Transform salient tracker points with mode displacement to normalized [0..1] canvas coordinates
     const computedTrackers: TrackerPoint[] = [];
     const numTrackers = this.baseTrackers.length;
 
     for (let i = 0; i < numTrackers; i++) {
       const trk = this.baseTrackers[i];
-      // World 3D position aligned with extruded particle relief
-      this.tempVec.set(trk.baseX, trk.baseY, (trk.rawDepth - 0.5) * this.settings.depthScale);
+      const seed = trk.seed ?? ((trk.id * 0.1337 + 0.1) % 1.0);
+      const sal = trk.salience ?? trk.intensity;
+
+      // Displaced 3D world position matching particle vertex shader
+      const [wx, wy, wz] = computeTrackerWorldPosition(
+        trk.baseX,
+        trk.baseY,
+        trk.rawDepth,
+        seed,
+        sal,
+        dispParams
+      );
+
+      this.tempVec.set(wx, wy, wz);
       this.tempVec.project(this.camera);
 
       // Filter out points behind camera (Three.js NDC z > 1.0)
@@ -592,8 +704,8 @@ export class ThreeParticleEngine implements ParticleEngine {
       const screenX = (this.tempVec.x + 1.0) * 0.5;
       const screenY = (1.0 - this.tempVec.y) * 0.5;
 
-      // Filter out points out of frustum [-0.1, 1.1]
-      if (screenX < -0.1 || screenX > 1.1 || screenY < -0.1 || screenY > 1.1) {
+      // Filter out points out of frustum [-0.15, 1.15]
+      if (screenX < -0.15 || screenX > 1.15 || screenY < -0.15 || screenY > 1.15) {
         continue;
       }
 
@@ -607,6 +719,12 @@ export class ThreeParticleEngine implements ParticleEngine {
         z: screenZ,
         intensity: trk.intensity,
         label: trk.label,
+        baseX: trk.baseX,
+        baseY: trk.baseY,
+        baseZ: trk.baseZ,
+        rawDepth: trk.rawDepth,
+        seed,
+        salience: sal,
       });
     }
 
@@ -623,8 +741,21 @@ export class ThreeParticleEngine implements ParticleEngine {
       pointer: { ...this.pointerState },
       viewMatrix: new Float32Array(this.camera.matrixWorldInverse.elements),
       projectionMatrix: new Float32Array(this.camera.projectionMatrix.elements),
+      viewProjectionMatrix: viewProjElements,
       cameraPosition: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
       trackers: computedTrackers,
+      depthScale: this.settings.depthScale,
+      noiseSpeed: this.settings.noiseSpeed,
+      noiseFrequency: this.settings.noiseFrequency,
+      noiseStrength: this.settings.noiseStrength,
+      splashStrength: this.settings.splashStrength,
+      orientation: [this.orientation.x, this.orientation.y],
+      pointerWorld: [this.pointerWorld.x, this.pointerWorld.y],
+      pointerRadius: 0.5,
+      impulseCenter: [this.impulseCenter.x, this.impulseCenter.y],
+      impulseStrength: this.impulseStrength,
+      prevMode: this.prevMode,
+      modeTransition: this.material.uniforms.uModeTransition.value,
     };
 
     return this.latestRenderState;
@@ -634,7 +765,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (this.latestRenderState) {
       return this.latestRenderState;
     }
-    return this.render(performance.now() / 1000);
+    return this.render();
   }
 
   public dispose(): void {

@@ -13,8 +13,10 @@ export {
   MAX_PARTICLE_CAPACITY,
   sampleDepth,
   sampleImageAndDepth,
+  shuffleParticles,
   type BaseTracker,
   type SampledParticles,
+  type SampleOptions,
 } from './sampling';
 export { PARTICLE_FRAGMENT_SHADER, PARTICLE_VERTEX_SHADER } from './shaders';
 

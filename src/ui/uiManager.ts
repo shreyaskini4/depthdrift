@@ -244,6 +244,10 @@ export class UIManager {
     this.topBar.setPipelineProvider(provider);
   }
 
+  public setDepthMode(mode: 'MODEL' | 'HEURISTIC', provider?: string): void {
+    this.topBar.setDepthMode(mode, provider);
+  }
+
   private getCurrentImage(): ImageItem | undefined {
     if (this.state.currentIndex >= 0 && this.state.currentIndex < this.state.images.length) {
       return this.state.images[this.state.currentIndex];

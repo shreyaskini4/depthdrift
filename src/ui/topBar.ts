@@ -22,6 +22,7 @@ export class TopBar {
   private isLoading: boolean = false;
   private loadingMessage: string = '';
   private pipelineProvider: string = 'WEBGPU';
+  private depthMode: 'MODEL' | 'HEURISTIC' = 'MODEL';
   private dpr: number = 1.0;
 
   constructor(parent: HTMLElement, options: TopBarOptions) {
@@ -48,6 +49,27 @@ export class TopBar {
     const formatted = provider.toUpperCase();
     if (this.pipelineProvider !== formatted) {
       this.pipelineProvider = formatted;
+      if (formatted === 'PROCEDURAL' || formatted === 'HEURISTIC') {
+        this.depthMode = 'HEURISTIC';
+      }
+      this.render();
+    }
+  }
+
+  public setDepthMode(mode: 'MODEL' | 'HEURISTIC', provider?: string): void {
+    let changed = false;
+    if (this.depthMode !== mode) {
+      this.depthMode = mode;
+      changed = true;
+    }
+    if (provider) {
+      const formatted = provider.toUpperCase();
+      if (this.pipelineProvider !== formatted) {
+        this.pipelineProvider = formatted;
+        changed = true;
+      }
+    }
+    if (changed) {
       this.render();
     }
   }
@@ -84,11 +106,21 @@ export class TopBar {
     const displayName = current ? current.fileName : 'No images loaded';
 
     this.container.innerHTML = `
-      <!-- Left cluster: Branding & Pipeline Provider Badge -->
+      <!-- Left cluster: Branding & Depth Pipeline / Fallback HUD Indicator -->
       <div class="top-bar-left">
         <div class="app-branding">
           <span class="app-branding-title">Drift</span>
-          <span class="app-branding-badge">${this.pipelineProvider}</span>
+          <div 
+            class="depth-hud-pill depth-hud-${this.depthMode.toLowerCase()}" 
+            role="status" 
+            aria-label="Depth pipeline status: ${this.depthMode} (${this.pipelineProvider})"
+            title="Active Depth Estimation Pipeline: ${this.depthMode} (${this.pipelineProvider})"
+          >
+            <span class="depth-hud-dot" aria-hidden="true"></span>
+            <span class="depth-hud-mode">${this.depthMode}</span>
+            <span class="depth-hud-divider" aria-hidden="true">/</span>
+            <span class="depth-hud-provider">${this.pipelineProvider}</span>
+          </div>
         </div>
 
         ${this.isLoading ? `

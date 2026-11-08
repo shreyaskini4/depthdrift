@@ -126,6 +126,39 @@ export class ModelCacheManager {
   }
 
   /**
+   * Retrieves an ONNX model buffer and any associated external data file (.onnx_data).
+   */
+  public async getModelWithExternalData(
+    modelUrl: string,
+    onProgress?: (progress: DownloadProgress) => void
+  ): Promise<{ modelBuffer: ArrayBuffer; externalData?: { path: string; data: Uint8Array } }> {
+    // 1. Fetch primary .onnx graph definition
+    const modelBuffer = await this.getOrFetch(modelUrl);
+
+    // 2. Check and fetch associated .onnx_data file if present
+    if (modelUrl.endsWith('.onnx')) {
+      const dataUrl = modelUrl.replace(/\.onnx$/, '.onnx_data');
+      const dataFileName = dataUrl.split('/').pop() || 'model.onnx_data';
+
+      try {
+        const dataBuffer = await this.getOrFetch(dataUrl, [], onProgress);
+        return {
+          modelBuffer,
+          externalData: {
+            path: dataFileName,
+            data: new Uint8Array(dataBuffer),
+          },
+        };
+      } catch (dataErr) {
+        // Model might be self-contained without a separate external data file
+        console.log(`[ModelCacheManager] No external data file loaded for ${modelUrl}:`, dataErr);
+      }
+    }
+
+    return { modelBuffer };
+  }
+
+  /**
    * Fetch a resource with ReadableStream progress tracking and at least 1 retry.
    */
   private async fetchWithRetry(

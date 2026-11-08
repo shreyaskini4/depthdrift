@@ -9,4 +9,5 @@ export * from './marks';
 export * from './overlayRenderer';
 export * from './scan';
 export * from './trackers';
+export * from './trackerDisplacement';
 export * from './trails';

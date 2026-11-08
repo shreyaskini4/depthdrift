@@ -87,7 +87,7 @@ export class DepthEstimatorImpl implements DepthEstimator {
         if (data.result) {
           const stats = computeDepthStats(data.result.data);
           console.log(
-            `[Drift Depth] Processed depth: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+            `[Drift Depth] Processed depth: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}, provider=${data.result.provider || 'wasm'}, source=${data.result.source || 'model'}`
           );
           pending.resolve(data.result);
         } else {
@@ -201,13 +201,31 @@ export class DepthEstimatorImpl implements DepthEstimator {
     source: ImageBitmap | HTMLImageElement | HTMLCanvasElement | ImageData,
     onProgress?: (progress: DepthProgressEvent) => void
   ): Promise<DepthResult> {
-    // 1. Create a dedicated ImageBitmap so the source element is not transferred/neutered
+    // 1. Create primary ImageBitmap for worker transfer
     const imageBitmap = await createImageBitmap(source);
+
+    // 2. Create an independent clone/copy of the ImageBitmap before transferring to the worker
+    // Used for computeLocalFallback if needed; closed on success to prevent memory leaks
+    const fallbackCopy = await createImageBitmap(imageBitmap);
 
     // If running in local fallback mode
     const worker = this.worker;
     if (this.fallbackOnly || !worker) {
-      return this.computeLocalFallback(imageBitmap, onProgress);
+      try {
+        imageBitmap.close();
+      } catch {
+        // ignore
+      }
+      try {
+        const result = await this.computeLocalFallback(fallbackCopy, onProgress);
+        return result;
+      } finally {
+        try {
+          fallbackCopy.close();
+        } catch {
+          // ignore
+        }
+      }
     }
 
     const reqId = this.nextId('estimate');
@@ -215,6 +233,13 @@ export class DepthEstimatorImpl implements DepthEstimator {
     return new Promise<DepthResult>((resolve, reject) => {
       this.pendingRequests.set(reqId, {
         resolve: (result?: DepthResult) => {
+          // Close the fallback copy on success to prevent memory leaks
+          try {
+            fallbackCopy.close();
+          } catch {
+            // ignore
+          }
+
           if (result) {
             resolve(result);
           } else {
@@ -224,10 +249,17 @@ export class DepthEstimatorImpl implements DepthEstimator {
         reject: async (err) => {
           console.warn('[DepthEstimator] Worker depth estimation failed, computing procedural fallback:', err);
           try {
-            const fallbackResult = await this.computeLocalFallback(imageBitmap, onProgress);
+            const fallbackResult = await this.computeLocalFallback(fallbackCopy, onProgress);
             resolve(fallbackResult);
           } catch (fbErr) {
             reject(fbErr);
+          } finally {
+            // Close the fallback copy after computeLocalFallback completes
+            try {
+              fallbackCopy.close();
+            } catch {
+              // ignore
+            }
           }
         },
         onProgress,
@@ -283,9 +315,11 @@ export class DepthEstimatorImpl implements DepthEstimator {
     }
 
     const result = createSyntheticDepth(w, h, imgData);
+    result.provider = 'heuristic';
+    result.source = 'heuristic';
     const stats = computeDepthStats(result.data);
     console.log(
-      `[Drift Depth] Processed depth (fallback): min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+      `[Drift Depth] Processed depth (fallback): min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}, provider=heuristic, source=heuristic`
     );
 
     if (onProgress) {

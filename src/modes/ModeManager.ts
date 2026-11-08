@@ -53,7 +53,7 @@ export class ModeManager {
   private splashDuration: number = 2.5; // seconds before splash resets
 
   // Configurable particle parameters
-  private depthScale: number = 1.0;
+  private depthScale: number = 0.4;
   private noiseSpeed: number = 0.6;
   private noiseFrequency: number = 1.2;
   private noiseStrength: number = 0.8;

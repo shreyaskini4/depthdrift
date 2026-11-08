@@ -3,6 +3,12 @@
  * Technical HUD bracket boxes, target reticles, corner ticks, and collision-free monospace telemetry labels.
  */
 import type { EngineRenderState, OverlaySettings, TrackerPoint } from '../types';
+import {
+  computeTrackerWorldPosition,
+  getModeTrackerOpacity,
+  projectWorldToScreen,
+  type TrackerDisplacementParams,
+} from './trackerDisplacement';
 
 export interface TrackersRenderOptions {
   maxTrackers?: number;
@@ -76,6 +82,36 @@ export function renderTrackers(
   const lineH = fontSize + 2.5; // ~13px line height
   const textH = lineH * 2;
 
+  // Motion parameters for displacement computation
+  const dispParams: TrackerDisplacementParams = {
+    time: renderState.time,
+    depthScale: renderState.depthScale ?? 1.0,
+    noiseSpeed: renderState.noiseSpeed ?? 0.6,
+    noiseFrequency: renderState.noiseFrequency ?? 1.2,
+    noiseStrength: renderState.noiseStrength ?? 0.8,
+    splashStrength: renderState.splashStrength ?? 1.5,
+    mode: renderState.activeMode,
+    prevMode: renderState.prevMode ?? renderState.activeMode,
+    modeTransition: renderState.modeTransition ?? 1.0,
+    pointerPos: renderState.pointerWorld ?? [0, 0],
+    pointerDown: renderState.pointer?.isDown ?? false,
+    pointerVelocity: [renderState.pointer?.vx ?? 0, renderState.pointer?.vy ?? 0],
+    pointerRadius: renderState.pointerRadius ?? 0.5,
+    orientation: renderState.orientation ?? [0, 0],
+    impulseCenter: renderState.impulseCenter ?? [0, 0],
+    impulseStrength: renderState.impulseStrength ?? 0.0,
+  };
+
+  // Smooth mode opacity fade policy (Requirement 3: fade out if costly/chaotic)
+  const prevModeOpacity = getModeTrackerOpacity(dispParams.prevMode ?? dispParams.mode);
+  const currModeOpacity = getModeTrackerOpacity(dispParams.mode);
+  const transition = Math.max(0.0, Math.min(1.0, dispParams.modeTransition ?? 1.0));
+  const modeOpacity = prevModeOpacity + (currModeOpacity - prevModeOpacity) * transition;
+  if (modeOpacity <= 0.001) {
+    ctx.restore();
+    return;
+  }
+
   // Precalculate screen positions, pulses, and reticle boxes for all active trackers
   const trackerMeta: Array<{
     p: TrackerPoint;
@@ -92,20 +128,66 @@ export function renderTrackers(
 
   for (let i = 0; i < sorted.length; i++) {
     const p = sorted[i];
-    const px = p.x * width;
-    const py = p.y * height;
+    let px = p.x * width;
+    let py = p.y * height;
+    let alphaMod = modeOpacity;
+    let currentZ = p.z;
+
+    // Use displacement function and engine viewProjectionMatrix if available
+    if (
+      p.baseX !== undefined &&
+      p.baseY !== undefined &&
+      p.rawDepth !== undefined &&
+      renderState.viewProjectionMatrix
+    ) {
+      const seed = p.seed ?? ((p.id * 0.1337 + 0.1) % 1.0);
+      const sal = p.salience ?? p.intensity;
+
+      // 1. Compute displaced 3D world position
+      const worldPos = computeTrackerWorldPosition(
+        p.baseX,
+        p.baseY,
+        p.rawDepth,
+        seed,
+        sal,
+        dispParams
+      );
+
+      // 2. Project displaced 3D world position to 2D screen coordinates with engine's viewProjectionMatrix
+      const proj = projectWorldToScreen(
+        worldPos,
+        renderState.viewProjectionMatrix,
+        width,
+        height,
+        renderState.viewMatrix,
+        renderState.projectionMatrix
+      );
+
+      if (!proj.inFrustum || proj.opacityMod <= 0.01) {
+        continue;
+      }
+
+      px = proj.x;
+      py = proj.y;
+      alphaMod *= proj.opacityMod;
+      currentZ = p.rawDepth;
+    }
 
     if (px < -40 || px > width + 40 || py < -40 || py > height + 40) {
       continue;
     }
 
     const pulse = Math.sin(time * 2.5 + p.id * 1.3);
-    const boxSize = 8 + p.z * 3 + pulse * 1.0;
+    const boxSize = 8 + currentZ * 3 + pulse * 1.0;
     const tickLen = Math.max(2.5, boxSize * 0.4);
-    const baseAlpha = 0.5 + 0.4 * p.intensity;
+    const baseAlpha = (0.5 + 0.4 * p.intensity) * alphaMod;
+
+    if (baseAlpha <= 0.01) {
+      continue;
+    }
 
     const tagId = p.label || `TRK-${String(p.id % 100).padStart(2, '0')}`;
-    const line1 = `${tagId} [Z: ${p.z.toFixed(2)}]`;
+    const line1 = `${tagId} [Z: ${currentZ.toFixed(2)}]`;
     const line2 = `VAL: ${Math.round(p.intensity * 100)}%`;
 
     const w1 = ctx.measureText(line1).width;

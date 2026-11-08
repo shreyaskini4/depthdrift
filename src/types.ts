@@ -7,6 +7,10 @@ export interface DepthResult {
   height: number;
   /** Normalized depth values in range [0.0, 1.0], Float32Array of length width * height */
   data: Float32Array;
+  /** Active execution provider used to compute this depth map */
+  provider?: 'webgpu' | 'wasm' | 'heuristic';
+  /** High-level pipeline classification */
+  source?: 'model' | 'heuristic';
 }
 
 export type ModeName = 'DRIFT' | 'SPLASH' | 'GATHER' | 'DEPTH' | 'TRAVEL' | 'SWARM' | 'MELT';
@@ -35,7 +39,7 @@ export interface ParticleSettings {
   particleCount: number;
   /** Point rendering size in physical pixels */
   pointSize: number;
-  /** Max depth extrusion along Z axis */
+  /** Max depth extrusion along Z axis (default: 0.4) */
   depthScale: number;
   /** Turbulence / noise animation speed */
   noiseSpeed: number;
@@ -68,6 +72,13 @@ export interface TrackerPoint {
   intensity: number;
   /** Optional descriptive tag or index label */
   label: string;
+  /** Base 3D position in world coordinates before displacement */
+  baseX?: number;
+  baseY?: number;
+  baseZ?: number;
+  rawDepth?: number;
+  seed?: number;
+  salience?: number;
 }
 
 export interface EngineRenderState {
@@ -85,10 +96,25 @@ export interface EngineRenderState {
   /** Camera projection and view matrix (4x4 Float32Array or array) */
   viewMatrix: Float32Array;
   projectionMatrix: Float32Array;
+  /** Combined view-projection matrix (4x4 Float32Array) */
+  viewProjectionMatrix?: Float32Array;
   /** Camera position in 3D world space */
   cameraPosition: [number, number, number];
   /** Sampled salient points for overlays (trackers, markers, links) in normalized [0..1] canvas coordinates */
   trackers: TrackerPoint[];
+  /** Motion and simulation parameters for overlay synchronization */
+  depthScale?: number;
+  noiseSpeed?: number;
+  noiseFrequency?: number;
+  noiseStrength?: number;
+  splashStrength?: number;
+  orientation?: [number, number];
+  pointerWorld?: [number, number];
+  pointerRadius?: number;
+  impulseCenter?: [number, number];
+  impulseStrength?: number;
+  prevMode?: ModeName;
+  modeTransition?: number;
 }
 
 export interface UserDrawingPoint {
@@ -140,7 +166,11 @@ export interface DepthEstimator {
  */
 export interface ParticleEngine {
   readonly canvas: HTMLCanvasElement;
-  setImage(pixels: HTMLCanvasElement | ImageBitmap | ImageData, depth: DepthResult): void;
+  setImage(
+    pixels: HTMLCanvasElement | ImageBitmap | ImageData,
+    depth: DepthResult,
+    options?: { count?: number; targetCount?: number } | number
+  ): void;
   setSettings(settings: Partial<ParticleSettings>): void;
   getSettings(): ParticleSettings;
   setMode(mode: ModeName, transitionDurationMs?: number): void;
@@ -149,7 +179,7 @@ export interface ParticleEngine {
   setOrientation(pitch: number, roll: number): void;
   addDrawImpulse(points: UserDrawingPoint[]): void;
   resize(width: number, height: number, dpr?: number): void;
-  render(t: number): EngineRenderState;
+  render(t?: number): EngineRenderState;
   getRenderState(): EngineRenderState;
   setDebug?(debug: boolean): void;
   dispose(): void;

@@ -30,6 +30,7 @@ export interface ModelConfig {
   id: string;
   name: string;
   primaryUrl: string;
+  wasmUrl?: string;
   fallbackUrls?: string[];
   license: string;
   licenseUrl: string;

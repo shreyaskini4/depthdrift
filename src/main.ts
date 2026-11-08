@@ -22,7 +22,7 @@ import { UIManager } from './ui';
 export const DEFAULT_SETTINGS: ParticleSettings = {
   particleCount: 120_000,
   pointSize: 2.0,
-  depthScale: 1.0,
+  depthScale: 0.4,
   noiseSpeed: 0.6,
   noiseFrequency: 1.2,
   noiseStrength: 0.8,
@@ -213,7 +213,8 @@ class DriftApp {
     this.state.error = null;
     this.state.isLoading = false;
     this.uiManager.hideLoading();
-    this.uiManager.setPipelineProvider('PROCEDURAL');
+    this.uiManager.setDepthMode('HEURISTIC', 'PROCEDURAL');
+    console.warn('[Drift] Procedural heuristic fallback enabled. Depth mode: HEURISTIC');
 
     // If an image was pending, recompute depth now
     if (this.state.currentIndex >= 0 && this.state.currentIndex < this.state.images.length) {
@@ -324,6 +325,13 @@ class DriftApp {
       item.depthResult = depthResult;
       item.status = 'ready';
 
+      const isHeuristic = depthResult.source === 'heuristic' || this.useProceduralFallbackOnly;
+      const depthMode: 'MODEL' | 'HEURISTIC' = isHeuristic ? 'HEURISTIC' : 'MODEL';
+      const provider = depthResult.provider?.toUpperCase() || (isHeuristic ? 'PROCEDURAL' : 'WASM');
+
+      console.log(`[Drift] Active Depth Pipeline: ${depthMode} (${provider}) for "${item.fileName}"`);
+      this.uiManager.setDepthMode(depthMode, provider);
+
       // If this item is currently selected, apply to engine
       const current = this.state.images[this.state.currentIndex];
       if (current && current.id === item.id) {
@@ -334,8 +342,13 @@ class DriftApp {
       console.warn('[Drift] Depth estimation failed, using procedural fallback:', err);
       // Heuristic fallback so image is always rendered
       const fallback = createSyntheticDepth(item.imageBitmap.width, item.imageBitmap.height);
+      fallback.source = 'heuristic';
+      fallback.provider = 'heuristic';
       item.depthResult = fallback;
       item.status = 'ready';
+
+      console.warn('[Drift] Active Depth Pipeline: HEURISTIC (PROCEDURAL) fallback triggered');
+      this.uiManager.setDepthMode('HEURISTIC', 'PROCEDURAL');
 
       const current = this.state.images[this.state.currentIndex];
       if (current && current.id === item.id) {

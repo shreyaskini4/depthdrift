@@ -142,10 +142,14 @@ workerScope.onmessage = async (event: MessageEvent<DepthWorkerRequest>) => {
           maxDimension: options?.maxDimension,
         });
 
+        // Tag provider and high-level source
+        depthResult.provider = pipeline.provider;
+        depthResult.source = pipeline.provider === 'heuristic' ? 'heuristic' : 'model';
+
         // Dev Telemetry & Logging
         const stats = computeDepthStats(depthResult.data);
         console.log(
-          `[Drift Depth Worker] Processed depth: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+          `[Drift Depth Worker] Depth result: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)} | Provider: ${pipeline.provider.toUpperCase()} | Source: ${depthResult.source.toUpperCase()}`
         );
 
         // Close input bitmap to free GPU/worker memory
