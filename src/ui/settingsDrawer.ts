@@ -10,6 +10,7 @@ export interface SettingsDrawerOptions {
   onSettingsChange: (settings: Partial<ParticleSettings>) => void;
   onResetDefaults: () => void;
   onClose: () => void;
+  onToggleDepthView?: () => void;
 }
 
 export class SettingsDrawer {
@@ -153,6 +154,18 @@ export class SettingsDrawer {
               <input type="checkbox" id="toggle-adaptive-fps" ${s.adaptiveFPS ? 'checked' : ''} />
               <span class="slider-switch"></span>
             </label>
+          </div>
+
+          <!-- Inspect Depth Map -->
+          <div class="setting-item action-item">
+            <div class="setting-label-row">
+              <label>Depth Map Inspector</label>
+              <span class="setting-shortcut">Key [D]</span>
+            </div>
+            <button id="btn-show-depth-map" class="btn-drawer-action" title="View 2D Monocular Depth Map">
+              ${ICONS.layers}
+              <span>Inspect Depth Map (D)</span>
+            </button>
           </div>
         </div>
 
@@ -357,6 +370,14 @@ export class SettingsDrawer {
       const adaptive = fpsCheck.checked;
       this.settings.adaptiveFPS = adaptive;
       this.options.onSettingsChange({ adaptiveFPS: adaptive });
+    });
+
+    // Inspect Depth Map
+    const depthBtn = this.container.querySelector('#btn-show-depth-map');
+    depthBtn?.addEventListener('click', () => {
+      if (this.options.onToggleDepthView) {
+        this.options.onToggleDepthView();
+      }
     });
 
     // Noise Speed

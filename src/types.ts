@@ -53,6 +53,8 @@ export interface ParticleSettings {
   overlays: OverlaySettings;
   /** Whether to dynamically adapt particle count to maintain 60 FPS */
   adaptiveFPS: boolean;
+  /** Debug mode flag */
+  debug?: boolean;
 }
 
 export interface TrackerPoint {
@@ -149,6 +151,7 @@ export interface ParticleEngine {
   resize(width: number, height: number, dpr?: number): void;
   render(t: number): EngineRenderState;
   getRenderState(): EngineRenderState;
+  setDebug?(debug: boolean): void;
   dispose(): void;
 }
 

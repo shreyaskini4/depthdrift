@@ -11,6 +11,8 @@ export interface BaseTracker {
   baseX: number;
   baseY: number;
   baseZ: number;
+  /** Actual normalized monocular depth [0.0..1.0] (1.0 = near, 0.0 = far) */
+  rawDepth: number;
   intensity: number;
   label: string;
 }
@@ -162,8 +164,8 @@ export function sampleImageAndDepth(
 
       const luma = luminanceGrid[yRow + gx];
 
-      // Salience: combined feature contrast, depth boundary, and tonal prominence
-      const sal = Math.max(0.04, Math.min(1.0, 0.55 * lumaGrad + 0.85 * depthGrad + 0.15 * luma));
+      // Salience: combined depth boundary, luminance gradient, and tonal prominence
+      const sal = Math.max(0.02, Math.min(1.0, 0.45 * depthGrad + 0.40 * lumaGrad + 0.15 * luma));
       const cellIdx = yRow + gx;
       salienceGrid[cellIdx] = sal;
 
@@ -172,58 +174,151 @@ export function sampleImageAndDepth(
     }
   }
 
-  // 3. Extract 60-120 salient trackers using spatial block maximums
-  const trackers: BaseTracker[] = [];
-  const blockCols = 10;
-  const blockRows = 10;
-  let trackerId = 0;
+  // 3. Extract salient trackers: strictly local maxima of depth gradient, edge strength, and luminance (NMS)
+  // Non-maximum suppression (NMS) local peaks across the grid
+  interface PeakCandidate {
+    gx: number;
+    gy: number;
+    u: number;
+    v: number;
+    sal: number;
+  }
+  const candidatePeaks: PeakCandidate[] = [];
 
-  for (let by = 0; by < blockRows; by++) {
-    const yStart = Math.floor((by / blockRows) * gridH);
-    const yEnd = Math.floor(((by + 1) / blockRows) * gridH);
+  for (let gy = 1; gy < gridH - 1; gy++) {
+    const yRow = gy * gridW;
+    for (let gx = 1; gx < gridW - 1; gx++) {
+      const idx = yRow + gx;
+      const s = salienceGrid[idx];
+      if (s < 0.05) continue; // Filter out flat/low-salience background
 
-    for (let bx = 0; bx < blockCols; bx++) {
-      const xStart = Math.floor((bx / blockCols) * gridW);
-      const xEnd = Math.floor(((bx + 1) / blockCols) * gridW);
-
-      let maxSal = -1;
-      let maxGx = xStart;
-      let maxGy = yStart;
-
-      for (let y = yStart; y < yEnd; y++) {
-        for (let x = xStart; x < xEnd; x++) {
-          const s = salienceGrid[y * gridW + x];
-          if (s > maxSal) {
-            maxSal = s;
-            maxGx = x;
-            maxGy = y;
+      let isPeak = true;
+      for (let dy = -1; dy <= 1 && isPeak; dy++) {
+        const nyRow = (gy + dy) * gridW;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nIdx = nyRow + (gx + dx);
+          const ns = salienceGrid[nIdx];
+          if (ns > s || (ns === s && nIdx < idx)) {
+            isPeak = false;
+            break;
           }
         }
       }
 
-      if (maxSal > 0.08) {
-        const u = (maxGx + 0.5) / gridW;
-        const v = (maxGy + 0.5) / gridH;
-        const dep = sampleDepth(depth, u, v);
-
-        const baseX = (u - 0.5) * aspect;
-        const baseY = 0.5 - v;
-        const baseZ = dep - 0.5;
-
-        const prefixes = ['TRK', 'NODE', 'DEPTH', 'MARK', 'EDGE'];
-        const prefix = prefixes[trackerId % prefixes.length];
-
-        trackers.push({
-          id: trackerId,
-          baseX,
-          baseY,
-          baseZ,
-          intensity: Math.round(maxSal * 100) / 100,
-          label: `${prefix}-${String(trackerId + 1).padStart(2, '0')}`,
+      if (isPeak) {
+        candidatePeaks.push({
+          gx,
+          gy,
+          u: (gx + 0.5) / gridW,
+          v: (gy + 0.5) / gridH,
+          sal: s,
         });
-        trackerId++;
       }
     }
+  }
+
+  // Sort candidate peaks strictly by prominence (salience descending)
+  candidatePeaks.sort((a, b) => b.sal - a.sal);
+
+  // Enforce minimum spatial spacing in image/grid space (>=60px on ~1000px screen => ~0.06 normalized distance)
+  const selectedCandidates: PeakCandidate[] = [];
+  const maxTrackerCandidates = 100;
+  const minSpacing = 0.06;
+  const minSpacingSq = minSpacing * minSpacing;
+
+  for (let i = 0; i < candidatePeaks.length && selectedCandidates.length < maxTrackerCandidates; i++) {
+    const cp = candidatePeaks[i];
+    let tooClose = false;
+    for (let j = 0; j < selectedCandidates.length; j++) {
+      const sc = selectedCandidates[j];
+      const dx = (cp.u - sc.u) * aspect;
+      const dy = cp.v - sc.v;
+      if (dx * dx + dy * dy < minSpacingSq) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (!tooClose) {
+      selectedCandidates.push(cp);
+    }
+  }
+
+  // Relaxed second pass if image features are sparse
+  if (selectedCandidates.length < 40) {
+    const relaxedSpacingSq = minSpacingSq * 0.45;
+    for (let i = 0; i < candidatePeaks.length && selectedCandidates.length < maxTrackerCandidates; i++) {
+      const cp = candidatePeaks[i];
+      if (selectedCandidates.includes(cp)) continue;
+      let tooClose = false;
+      for (let j = 0; j < selectedCandidates.length; j++) {
+        const sc = selectedCandidates[j];
+        const dx = (cp.u - sc.u) * aspect;
+        const dy = cp.v - sc.v;
+        if (dx * dx + dy * dy < relaxedSpacingSq) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (!tooClose) {
+        selectedCandidates.push(cp);
+      }
+    }
+  }
+
+  // Fallback for uniform images to ensure sufficient candidate coverage
+  if (selectedCandidates.length < 16) {
+    const step = Math.max(2, Math.floor(gridW / 10));
+    for (let gy = step; gy < gridH - step && selectedCandidates.length < maxTrackerCandidates; gy += step) {
+      for (let gx = step; gx < gridW - step && selectedCandidates.length < maxTrackerCandidates; gx += step) {
+        const u = (gx + 0.5) / gridW;
+        const v = (gy + 0.5) / gridH;
+        let tooClose = false;
+        for (let j = 0; j < selectedCandidates.length; j++) {
+          const sc = selectedCandidates[j];
+          const dx = (u - sc.u) * aspect;
+          const dy = v - sc.v;
+          if (dx * dx + dy * dy < 0.035 * 0.035) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (!tooClose) {
+          selectedCandidates.push({
+            gx,
+            gy,
+            u,
+            v,
+            sal: salienceGrid[gy * gridW + gx],
+          });
+        }
+      }
+    }
+  }
+
+  // Re-sort to guarantee prominence order
+  selectedCandidates.sort((a, b) => b.sal - a.sal);
+
+  const trackers: BaseTracker[] = [];
+  const prefixes = ['TRK', 'NODE', 'MARK', 'DEPTH', 'EDGE'];
+
+  for (let i = 0; i < selectedCandidates.length; i++) {
+    const c = selectedCandidates[i];
+    const dep = sampleDepth(depth, c.u, c.v);
+    const baseX = (c.u - 0.5) * aspect;
+    const baseY = 0.5 - c.v;
+    const baseZ = dep - 0.5;
+    const prefix = prefixes[i % prefixes.length];
+
+    trackers.push({
+      id: i,
+      baseX,
+      baseY,
+      baseZ,
+      rawDepth: dep,
+      intensity: Math.max(0.05, Math.min(1.0, Math.round(c.sal * 100) / 100)),
+      label: `${prefix}-${String(i + 1).padStart(2, '0')}`,
+    });
   }
 
   // 4. Sample particles
@@ -367,7 +462,6 @@ export function createDefaultParticles(count: number = MAX_PARTICLE_CAPACITY): S
   const rows = Math.ceil(count / cols);
 
   const trackers: BaseTracker[] = [];
-  const trackerStep = Math.floor(count / 80);
 
   for (let i = 0; i < count; i++) {
     const col = i % cols;
@@ -404,18 +498,56 @@ export function createDefaultParticles(count: number = MAX_PARTICLE_CAPACITY): S
     randomSeeds[i2] = Math.random();
     randomSeeds[i2 + 1] = Math.random();
 
-    const sal = Math.max(0.1, Math.min(1.0, Math.abs(wave1 * 3.0) + 0.2));
+    const sal = Math.max(0.1, Math.min(1.0, Math.abs(wave1 * 3.0) + Math.abs(wave2 * 2.0) + 0.15));
     saliences[i] = sal;
     depths[i] = dep;
+  }
 
-    if (i % trackerStep === 0 && trackers.length < 80) {
+  // Generate up to 100 well-separated salient trackers from wave surface peaks
+  const defaultCandidates: { x: number; y: number; dep: number; sal: number }[] = [];
+  const sampleSteps = 24;
+  for (let gy = 0; gy < sampleSteps; gy++) {
+    const v = (gy + 0.5) / sampleSteps;
+    const y = (0.5 - v) * 1.4;
+    for (let gx = 0; gx < sampleSteps; gx++) {
+      const u = (gx + 0.5) / sampleSteps;
+      const x = (u - 0.5) * 1.4;
+      const r = Math.sqrt(x * x + y * y);
+      const wave1 = Math.sin(r * 14.0) * 0.25;
+      const wave2 = Math.cos(x * 8.0) * Math.sin(y * 8.0) * 0.15;
+      const dep = Math.max(0.0, Math.min(1.0, 0.5 + wave1 + wave2));
+      const sal = Math.max(0.1, Math.min(1.0, Math.abs(wave1 * 3.0) + Math.abs(wave2 * 2.0) + 0.15));
+      defaultCandidates.push({ x, y, dep, sal });
+    }
+  }
+
+  defaultCandidates.sort((a, b) => b.sal - a.sal);
+  const minDefaultSpacingSq = 0.08 * 0.08;
+  const prefixes = ['TRK', 'NODE', 'MARK', 'DEPTH', 'EDGE'];
+
+  for (let i = 0; i < defaultCandidates.length && trackers.length < 100; i++) {
+    const cand = defaultCandidates[i];
+    let tooClose = false;
+    for (let j = 0; j < trackers.length; j++) {
+      const t = trackers[j];
+      const dx = cand.x - t.baseX;
+      const dy = cand.y - t.baseY;
+      if (dx * dx + dy * dy < minDefaultSpacingSq) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (!tooClose) {
+      const id = trackers.length;
+      const prefix = prefixes[id % prefixes.length];
       trackers.push({
-        id: trackers.length,
-        baseX: x,
-        baseY: y,
-        baseZ: dep - 0.5,
-        intensity: Math.round(sal * 100) / 100,
-        label: `TRK-${String(trackers.length + 1).padStart(2, '0')}`,
+        id,
+        baseX: cand.x,
+        baseY: cand.y,
+        baseZ: cand.dep - 0.5,
+        rawDepth: cand.dep,
+        intensity: Math.round(cand.sal * 100) / 100,
+        label: `${prefix}-${String(id + 1).padStart(2, '0')}`,
       });
     }
   }

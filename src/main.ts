@@ -78,7 +78,11 @@ class DriftApp {
   private state: AppState = {
     images: [],
     currentIndex: -1,
-    settings: { ...DEFAULT_SETTINGS, overlays: { ...DEFAULT_SETTINGS.overlays, active: { ...DEFAULT_SETTINGS.overlays.active } } },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      overlays: { ...DEFAULT_SETTINGS.overlays, active: { ...DEFAULT_SETTINGS.overlays.active } },
+      debug: typeof window !== 'undefined' && window.location.search.includes('debug'),
+    },
     isLoading: false,
     loadingMessage: '',
     loadingProgress: 0,
@@ -87,12 +91,12 @@ class DriftApp {
     creditsOpen: false,
   };
 
-  private particleCanvas: HTMLCanvasElement;
-  private overlayCanvas: HTMLCanvasElement;
+  private particleCanvas!: HTMLCanvasElement;
+  private overlayCanvas!: HTMLCanvasElement;
 
   private depthEstimator = createDepthEstimator();
-  private particleEngine = createParticleEngine();
-  private overlayRenderer = new OverlayRendererImpl();
+  private particleEngine!: ReturnType<typeof createParticleEngine>;
+  private overlayRenderer!: OverlayRendererImpl;
   private videoRecorder!: VideoRecorder;
   private uiManager!: UIManager;
 
@@ -108,7 +112,7 @@ class DriftApp {
       throw new Error('[Drift] Canvas elements not found in DOM.');
     }
 
-    // Replace default canvas instances with the DOM elements
+    // Initialize particle engine and overlay renderer once with the DOM canvas elements
     this.particleEngine = createParticleEngine(this.particleCanvas, this.state.settings);
     this.overlayRenderer = new OverlayRendererImpl(this.overlayCanvas);
 
@@ -152,6 +156,7 @@ class DriftApp {
       onResetDefaults: () => this.resetSettings(),
       onRetryModel: () => this.initDepthModel(),
       onUseProceduralFallback: () => this.enableProceduralFallback(),
+      onToggleDepthView: () => this.toggleDepthDebugView(),
     });
 
     this.setupWindowEvents();
@@ -208,6 +213,7 @@ class DriftApp {
     this.state.error = null;
     this.state.isLoading = false;
     this.uiManager.hideLoading();
+    this.uiManager.setPipelineProvider('PROCEDURAL');
 
     // If an image was pending, recompute depth now
     if (this.state.currentIndex >= 0 && this.state.currentIndex < this.state.images.length) {
@@ -322,6 +328,7 @@ class DriftApp {
       const current = this.state.images[this.state.currentIndex];
       if (current && current.id === item.id) {
         this.particleEngine.setImage(item.imageBitmap, depthResult);
+        this.uiManager.updateDepthDebug(depthResult, item.fileName);
       }
     } catch (err) {
       console.warn('[Drift] Depth estimation failed, using procedural fallback:', err);
@@ -333,6 +340,7 @@ class DriftApp {
       const current = this.state.images[this.state.currentIndex];
       if (current && current.id === item.id) {
         this.particleEngine.setImage(item.imageBitmap, fallback);
+        this.uiManager.updateDepthDebug(fallback, item.fileName);
       }
     } finally {
       this.state.isLoading = false;
@@ -351,6 +359,7 @@ class DriftApp {
 
     if (item.depthResult) {
       this.particleEngine.setImage(item.imageBitmap, item.depthResult);
+      this.uiManager.updateDepthDebug(item.depthResult, item.fileName);
     }
 
     this.uiManager.updateImages(this.state.images, index);
@@ -463,6 +472,21 @@ class DriftApp {
     }
   }
 
+  /**
+   * Toggles the 2D Monocular Depth Map debug inspector modal.
+   */
+  public toggleDepthDebugView(): void {
+    const current = this.getCurrentImage();
+    this.uiManager.toggleDepthDebug(current?.depthResult, current?.fileName);
+  }
+
+  private getCurrentImage(): ImageItem | undefined {
+    if (this.state.currentIndex >= 0 && this.state.currentIndex < this.state.images.length) {
+      return this.state.images[this.state.currentIndex];
+    }
+    return undefined;
+  }
+
   private setupPointerEvents(): void {
     const onPointerMove = (e: PointerEvent) => {
       this.particleEngine.setPointer(e.clientX, e.clientY, this.isPointerDown);
@@ -570,6 +594,13 @@ class DriftApp {
         return;
       }
 
+      // D: Toggle Depth Map Debug View
+      if (e.key === 'd' || e.key === 'D') {
+        e.preventDefault();
+        this.toggleDepthDebugView();
+        return;
+      }
+
       // Escape: Close any open modal or drawer
       if (e.key === 'Escape') {
         this.uiManager.closeAllModals();
@@ -601,7 +632,10 @@ class DriftApp {
       // 2. Render 2D overlays synchronized with particle camera and tracker points
       this.overlayRenderer.render(renderState, this.state.settings.overlays);
 
-      // 3. Composite video stream frame if currently recording
+      // 3. Update real-time HUD telemetry (live FPS from FPSRegulator, dimensions, particles)
+      this.uiManager.updateTelemetry(renderState);
+
+      // 4. Composite video stream frame if currently recording
       if (this.videoRecorder && this.videoRecorder.isRecording()) {
         this.videoRecorder.compositeFrame();
       }

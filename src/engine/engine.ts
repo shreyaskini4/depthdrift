@@ -81,6 +81,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   private isMorphing: boolean = false;
   private morphStartTime: number = 0;
   private morphDuration: number = 800;
+  private currentDataCount: number = MAX_PARTICLE_CAPACITY;
 
   // Render timing & caching
   private lastTime: number = 0;
@@ -89,6 +90,10 @@ export class ThreeParticleEngine implements ParticleEngine {
 
   constructor(canvas?: HTMLCanvasElement, initialSettings?: Partial<ParticleSettings>) {
     this.canvas = canvas ?? document.createElement('canvas');
+
+    const isDebug =
+      (typeof window !== 'undefined' && window.location.search.includes('debug')) ||
+      !!initialSettings?.debug;
 
     // Default settings
     this.settings = {
@@ -117,6 +122,7 @@ export class ThreeParticleEngine implements ParticleEngine {
         trailFade: 0.15,
       },
       adaptiveFPS: initialSettings?.adaptiveFPS ?? true,
+      debug: isDebug,
     };
 
     this.fpsRegulator = new FPSRegulator(this.settings.particleCount, this.settings.adaptiveFPS);
@@ -195,8 +201,10 @@ export class ThreeParticleEngine implements ParticleEngine {
         uMorphProgress: { value: 0.0 },
         uImpulseCenter: { value: new THREE.Vector2(0, 0) },
         uImpulseStrength: { value: 0.0 },
+        uDebug: { value: isDebug ? 1 : 0 },
       },
       transparent: true,
+      depthTest: false,
       depthWrite: false,
       blending:
         this.settings.colorMode === 'ON_WHITE' ? THREE.NormalBlending : THREE.AdditiveBlending,
@@ -206,8 +214,8 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.points.frustumCulled = false;
     this.scene.add(this.points);
 
-    // Initial default particles
-    const defaultData = createDefaultParticles(this.settings.particleCount);
+    // Initial default particles: allocate full capacity so all buffer indices are populated
+    const defaultData = createDefaultParticles(MAX_PARTICLE_CAPACITY);
     this.applySampledData(defaultData, false);
 
     // Initial clear color
@@ -219,9 +227,10 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.renderer.setClearColor(0xfcfcfd, 1.0);
       this.material.blending = THREE.NormalBlending;
     } else {
-      this.renderer.setClearColor(0x07080b, 1.0);
+      this.renderer.setClearColor(0x050506, 1.0);
       this.material.blending = THREE.AdditiveBlending;
     }
+    this.material.needsUpdate = true;
   }
 
   private applySampledData(data: SampledParticles, morph: boolean = true): void {
@@ -235,7 +244,7 @@ export class ThreeParticleEngine implements ParticleEngine {
     const depAttr = this.geometry.getAttribute('sourceDepth') as THREE.BufferAttribute;
     const tgtDepAttr = this.geometry.getAttribute('targetDepth') as THREE.BufferAttribute;
 
-    const count = data.count;
+    const count = Math.max(1, Math.min(MAX_PARTICLE_CAPACITY, data.count));
 
     if (morph) {
       // Current rendered positions become source, new data becomes target
@@ -249,6 +258,26 @@ export class ThreeParticleEngine implements ParticleEngine {
       tgtSalAttr.needsUpdate = true;
       tgtDepAttr.needsUpdate = true;
 
+      if (data.randomSeeds) {
+        (seedAttr.array as Float32Array).set(data.randomSeeds.subarray(0, count * 2));
+        seedAttr.needsUpdate = true;
+      }
+
+      // If particle count increased, populate source buffers for new particles
+      if (count > this.currentDataCount) {
+        const start = this.currentDataCount;
+        (posAttr.array as Float32Array).set(data.positions.subarray(start * 3, count * 3), start * 3);
+        (colAttr.array as Float32Array).set(data.colors.subarray(start * 3, count * 3), start * 3);
+        (salAttr.array as Float32Array).set(data.saliences.subarray(start, count), start);
+        (depAttr.array as Float32Array).set(data.depths.subarray(start, count), start);
+
+        posAttr.needsUpdate = true;
+        colAttr.needsUpdate = true;
+        salAttr.needsUpdate = true;
+        depAttr.needsUpdate = true;
+      }
+
+      this.currentDataCount = count;
       this.isMorphing = true;
       this.morphStartTime = performance.now();
       this.morphDuration = 800;
@@ -275,6 +304,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
       this.material.uniforms.uMorphProgress.value = 0.0;
       this.isMorphing = false;
+      this.currentDataCount = count;
     }
 
     this.baseTrackers = data.trackers;
@@ -338,6 +368,11 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (settings.adaptiveFPS !== undefined) {
       this.settings.adaptiveFPS = settings.adaptiveFPS;
       this.fpsRegulator.setEnabled(settings.adaptiveFPS);
+    }
+
+    if (settings.debug !== undefined) {
+      this.settings.debug = settings.debug;
+      this.material.uniforms.uDebug.value = settings.debug ? 1 : 0;
     }
 
     if (settings.overlays !== undefined) {
@@ -460,6 +495,11 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.material.uniforms.uPixelRatio.value = targetDpr;
   }
 
+  public setDebug(debug: boolean): void {
+    this.settings.debug = debug;
+    this.material.uniforms.uDebug.value = debug ? 1 : 0;
+  }
+
   public render(t: number): EngineRenderState {
     const tSec = t > 1e6 ? t / 1000 : t;
     const dt = this.lastTime > 0 ? Math.max(0.001, Math.min(0.2, tSec - this.lastTime)) : 0.016;
@@ -467,7 +507,8 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Adaptive FPS regulation
     const { fps, effectiveParticleCount } = this.fpsRegulator.update(dt);
-    this.geometry.setDrawRange(0, effectiveParticleCount);
+    const drawCount = Math.max(1, Math.min(this.currentDataCount, effectiveParticleCount));
+    this.geometry.setDrawRange(0, drawCount);
 
     // Uniform updates
     this.material.uniforms.uTime.value = tSec;
@@ -540,13 +581,24 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     for (let i = 0; i < numTrackers; i++) {
       const trk = this.baseTrackers[i];
-      this.tempVec.set(trk.baseX, trk.baseY, trk.baseZ * this.settings.depthScale);
+      // World 3D position aligned with extruded particle relief
+      this.tempVec.set(trk.baseX, trk.baseY, (trk.rawDepth - 0.5) * this.settings.depthScale);
       this.tempVec.project(this.camera);
 
-      // Normalized screen space [0..1]
+      // Filter out points behind camera (Three.js NDC z > 1.0)
+      if (this.tempVec.z > 1.0) continue;
+
+      // Normalized screen coordinates
       const screenX = (this.tempVec.x + 1.0) * 0.5;
       const screenY = (1.0 - this.tempVec.y) * 0.5;
-      const screenZ = (this.tempVec.z + 1.0) * 0.5;
+
+      // Filter out points out of frustum [-0.1, 1.1]
+      if (screenX < -0.1 || screenX > 1.1 || screenY < -0.1 || screenY > 1.1) {
+        continue;
+      }
+
+      // Real normalized monocular depth [0.0..1.0] (1.0 = near, 0.0 = far)
+      const screenZ = trk.rawDepth;
 
       computedTrackers.push({
         id: trk.id,

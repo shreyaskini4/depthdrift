@@ -35,6 +35,7 @@ import {
   HeuristicModelPipeline,
   ONNXModelPipeline,
 } from './pipeline';
+import { computeDepthStats } from './postprocess';
 
 // Worker context abstraction to ensure clean typings in DOM/Worker mixed environments
 interface WorkerContext {
@@ -140,6 +141,12 @@ workerScope.onmessage = async (event: MessageEvent<DepthWorkerRequest>) => {
         const depthResult = await pipeline.estimate(imageBitmap, {
           maxDimension: options?.maxDimension,
         });
+
+        // Dev Telemetry & Logging
+        const stats = computeDepthStats(depthResult.data);
+        console.log(
+          `[Drift Depth Worker] Processed depth: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+        );
 
         // Close input bitmap to free GPU/worker memory
         try {

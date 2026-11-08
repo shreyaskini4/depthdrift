@@ -114,7 +114,7 @@ export class FloatingControls {
         badgeEl.className = 'recording-badge';
         badgeEl.setAttribute('aria-live', 'polite');
         badgeEl.innerHTML = `
-          <span class="recording-pulse-dot"></span>
+          <span class="recording-pulse-dot" aria-hidden="true"></span>
           <span class="recording-timer">REC ${this.recordingDurationText}</span>
         `;
         actionsGroup.insertBefore(badgeEl, recordBtn);
@@ -132,7 +132,7 @@ export class FloatingControls {
   public render(): void {
     this.container.innerHTML = `
       <div class="controls-panel glassmorphic-panel">
-        <!-- Row 1: Mode Selector (Horizontal Scrollable) -->
+        <!-- Row 1: Mode Selector (Horizontal Scrollable with Touch Momentum) -->
         <div class="controls-row mode-row" role="radiogroup" aria-label="Particle Modes">
           <span class="row-label">MODE</span>
           <div class="mode-scroll-container">
@@ -154,61 +154,64 @@ export class FloatingControls {
           </div>
         </div>
 
-        <!-- Row 2: Overlays, Color Modes & Action Buttons -->
+        <!-- Row 2: Secondary Controls (Overlays, Palette & Anchored Actions) -->
         <div class="controls-row secondary-row">
-          <!-- Overlays Group -->
-          <div class="overlays-group" role="group" aria-label="HUD Overlays">
-            <span class="row-label">HUD</span>
-            <div class="pill-group">
-              ${OVERLAYS.map((ov) => {
-                const isActive = !!this.overlaySettings.active[ov.name];
-                return `
-                  <button 
-                    class="overlay-pill ${isActive ? 'active' : ''}" 
-                    data-overlay="${ov.name}"
-                    aria-pressed="${isActive}"
-                    title="Toggle ${ov.label} overlay"
-                  >
-                    <span class="indicator-dot"></span>
-                    <span class="pill-text">${ov.label}</span>
-                  </button>
-                `;
-              }).join('')}
+          <!-- Scrollable Overlays & Palette Container -->
+          <div class="secondary-scroll-area">
+            <!-- Overlays Group -->
+            <div class="overlays-group" role="group" aria-label="HUD Overlays">
+              <span class="row-label">HUD</span>
+              <div class="overlay-scroll-container">
+                ${OVERLAYS.map((ov) => {
+                  const isActive = !!this.overlaySettings.active[ov.name];
+                  return `
+                    <button 
+                      class="overlay-pill ${isActive ? 'active' : ''}" 
+                      data-overlay="${ov.name}"
+                      aria-pressed="${isActive}"
+                      title="Toggle ${ov.label} overlay"
+                    >
+                      <span class="indicator-dot" aria-hidden="true"></span>
+                      <span class="pill-text">${ov.label}</span>
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <!-- Divider -->
+            <div class="controls-divider" aria-hidden="true"></div>
+
+            <!-- Color Mode Group -->
+            <div class="color-modes-group" role="radiogroup" aria-label="Color Modes">
+              <span class="row-label">PALETTE</span>
+              <div class="color-scroll-container">
+                ${COLOR_MODES.map((cm) => {
+                  const isActive = cm.name === this.currentColorMode;
+                  return `
+                    <button 
+                      class="color-pill ${isActive ? 'active' : ''}" 
+                      data-color="${cm.name}"
+                      role="radio"
+                      aria-checked="${isActive}"
+                      title="Palette: ${cm.label}"
+                    >
+                      <span class="pill-text">${cm.label}</span>
+                    </button>
+                  `;
+                }).join('')}
+              </div>
             </div>
           </div>
 
-          <!-- Divider -->
-          <div class="controls-divider"></div>
+          <!-- Divider between scrollable settings and anchored actions -->
+          <div class="controls-divider fixed-divider" aria-hidden="true"></div>
 
-          <!-- Color Mode Group -->
-          <div class="color-modes-group" role="radiogroup" aria-label="Color Modes">
-            <span class="row-label">PALETTE</span>
-            <div class="pill-group">
-              ${COLOR_MODES.map((cm) => {
-                const isActive = cm.name === this.currentColorMode;
-                return `
-                  <button 
-                    class="color-pill ${isActive ? 'active' : ''}" 
-                    data-color="${cm.name}"
-                    role="radio"
-                    aria-checked="${isActive}"
-                    title="Palette: ${cm.label}"
-                  >
-                    <span class="pill-text">${cm.label}</span>
-                  </button>
-                `;
-              }).join('')}
-            </div>
-          </div>
-
-          <!-- Divider -->
-          <div class="controls-divider"></div>
-
-          <!-- Action Buttons Group -->
-          <div class="actions-group" role="toolbar" aria-label="Actions">
+          <!-- Action Buttons Group (Always anchored and accessible) -->
+          <div class="actions-group" role="toolbar" aria-label="Quick Actions">
             ${this.isRecording ? `
               <div class="recording-badge" aria-live="polite">
-                <span class="recording-pulse-dot"></span>
+                <span class="recording-pulse-dot" aria-hidden="true"></span>
                 <span class="recording-timer">REC ${this.recordingDurationText}</span>
               </div>
             ` : ''}

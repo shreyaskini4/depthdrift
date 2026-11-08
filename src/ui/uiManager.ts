@@ -6,18 +6,21 @@
 import type {
   AppState,
   ColorMode,
+  DepthResult,
   ImageItem,
   ModeName,
   OverlayName,
   ParticleSettings,
 } from '@/types';
 import { CreditsModal } from './creditsModal';
+import { DepthDebugModal } from './depthDebugModal';
 import { generateAllDemoArt } from './demoArt';
 import { FloatingControls } from './floatingControls';
 import { LoadingOverlay } from './loadingOverlay';
 import { SettingsDrawer } from './settingsDrawer';
 import { TitleScreen } from './titleScreen';
 import { TopBar } from './topBar';
+import { TelemetryBadge } from './telemetryBadge';
 
 export interface UIManagerCallbacks {
   onModeChange: (mode: ModeName) => void;
@@ -33,6 +36,7 @@ export interface UIManagerCallbacks {
   onResetDefaults: () => void;
   onRetryModel: () => void;
   onUseProceduralFallback: () => void;
+  onToggleDepthView?: () => void;
 }
 
 export class UIManager {
@@ -42,6 +46,8 @@ export class UIManager {
   private settingsDrawer: SettingsDrawer;
   private loadingOverlay: LoadingOverlay;
   private creditsModal: CreditsModal;
+  private depthDebugModal: DepthDebugModal;
+  private telemetryBadge: TelemetryBadge;
 
   private state: AppState;
   private callbacks: UIManagerCallbacks;
@@ -54,6 +60,7 @@ export class UIManager {
     const main = document.getElementById('app-main') || document.body;
     const drawer = document.getElementById('app-drawer') || document.body;
     const footer = document.getElementById('app-footer') || document.body;
+    const uiLayer = document.getElementById('ui-layer') || document.body;
 
     // 1. Top Bar
     this.topBar = new TopBar(header, {
@@ -61,6 +68,13 @@ export class UIManager {
       onPrev: () => this.callbacks.onPrevImage(),
       onSelect: (idx) => this.callbacks.onSelectImage(idx),
       onAddImages: () => this.openAddImagesDialog(),
+      onToggleDepthView: () => {
+        if (this.callbacks.onToggleDepthView) {
+          this.callbacks.onToggleDepthView();
+        } else {
+          this.toggleDepthDebug();
+        }
+      },
     });
 
     // 2. Title Screen & Drop Zone
@@ -103,6 +117,13 @@ export class UIManager {
       onClose: () => {
         this.state.drawerOpen = false;
       },
+      onToggleDepthView: () => {
+        if (this.callbacks.onToggleDepthView) {
+          this.callbacks.onToggleDepthView();
+        } else {
+          this.toggleDepthDebug();
+        }
+      },
     });
 
     // 5. Loading & Error Overlay
@@ -117,6 +138,16 @@ export class UIManager {
         this.state.creditsOpen = false;
       },
     });
+
+    // 7. Depth Map Inspector Modal
+    this.depthDebugModal = new DepthDebugModal(main, {
+      onClose: () => {
+        // Closed
+      },
+    });
+
+    // 8. Live Real-Time Telemetry Badge
+    this.telemetryBadge = new TelemetryBadge(uiLayer);
 
     // Initial state reflection
     this.update(initialState);
@@ -167,8 +198,65 @@ export class UIManager {
     this.floatingControls.setRecordingState(isRecording, timeStr);
   }
 
+  public openDepthDebug(depthResult?: DepthResult, fileName?: string): void {
+    const cur = this.getCurrentImage();
+    const dr = depthResult ?? cur?.depthResult;
+    const fn = fileName ?? cur?.fileName;
+    this.depthDebugModal.open(dr, fn);
+  }
+
+  public closeDepthDebug(): void {
+    this.depthDebugModal.close();
+  }
+
+  public toggleDepthDebug(depthResult?: DepthResult, fileName?: string): void {
+    const cur = this.getCurrentImage();
+    const dr = depthResult ?? cur?.depthResult;
+    const fn = fileName ?? cur?.fileName;
+    this.depthDebugModal.toggle(dr, fn);
+  }
+
+  public updateDepthDebug(depthResult?: DepthResult, fileName?: string): void {
+    const cur = this.getCurrentImage();
+    const dr = depthResult ?? cur?.depthResult;
+    const fn = fileName ?? cur?.fileName;
+    this.depthDebugModal.updateDepth(dr, fn);
+  }
+
+  public isDepthDebugOpen(): boolean {
+    return this.depthDebugModal.getIsOpen();
+  }
+
+  public updateTelemetry(data: {
+    fps: number;
+    width: number;
+    height: number;
+    particleCount?: number;
+    dpr?: number;
+  }): void {
+    this.telemetryBadge.update(data);
+    if (data.dpr) {
+      this.topBar.setDpr(data.dpr);
+    }
+  }
+
+  public setPipelineProvider(provider: string): void {
+    this.topBar.setPipelineProvider(provider);
+  }
+
+  private getCurrentImage(): ImageItem | undefined {
+    if (this.state.currentIndex >= 0 && this.state.currentIndex < this.state.images.length) {
+      return this.state.images[this.state.currentIndex];
+    }
+    return undefined;
+  }
+
   public closeAllModals(): boolean {
     let closedAny = false;
+    if (this.depthDebugModal.getIsOpen()) {
+      this.closeDepthDebug();
+      closedAny = true;
+    }
     if (this.creditsModal.getIsOpen()) {
       this.closeCredits();
       closedAny = true;

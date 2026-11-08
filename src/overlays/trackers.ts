@@ -1,15 +1,46 @@
 /**
  * Drift - Trackers Overlay
- * Technical HUD bracket boxes, target reticles, corner ticks, and compact monospace telemetry labels.
+ * Technical HUD bracket boxes, target reticles, corner ticks, and collision-free monospace telemetry labels.
  */
-import type { EngineRenderState, OverlaySettings } from '../types';
+import type { EngineRenderState, OverlaySettings, TrackerPoint } from '../types';
 
 export interface TrackersRenderOptions {
   maxTrackers?: number;
 }
 
+interface BoundingBox {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+type Direction = 'top-right' | 'bottom-right' | 'top-left' | 'bottom-left';
+
+interface DirectionCandidate {
+  dir: Direction;
+  anchorX: number;
+  anchorY: number;
+  elbowX: number;
+  elbowY: number;
+  stubX: number;
+  stubY: number;
+  textX: number;
+  textY: number;
+  labelBox: BoundingBox;
+}
+
+function boxesIntersect(a: BoundingBox, b: BoundingBox, padding: number = 0): boolean {
+  return !(
+    a.x2 + padding < b.x1 ||
+    a.x1 - padding > b.x2 ||
+    a.y2 + padding < b.y1 ||
+    a.y1 - padding > b.y2
+  );
+}
+
 /**
- * Render technical HUD trackers over salient feature points.
+ * Render technical HUD trackers with greedy 2D bounding-box collision avoidance.
  */
 export function renderTrackers(
   ctx: CanvasRenderingContext2D,
@@ -21,97 +52,397 @@ export function renderTrackers(
   if (!trackers || trackers.length === 0) return;
 
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
-  const density = Math.max(0.05, Math.min(1.0, settings.trackerDensity ?? 0.5));
-  const maxLimit = options.maxTrackers ?? 50;
+  const density = Math.max(0.0, Math.min(1.0, settings.trackerDensity ?? 0.5));
+  const maxLimit = options.maxTrackers ?? 100;
 
-  // Determine how many trackers to render based on density
-  const count = Math.min(
+  // SPARSE to DENSE: 8 trackers at 0.0, up to 80 trackers at 1.0
+  const targetCount = Math.min(
     maxLimit,
-    Math.max(2, Math.round(trackers.length * density))
+    Math.round(8 + density * 72)
   );
 
-  // Use stable copy sorted by intensity descending
-  const sorted = [...trackers].sort((a, b) => b.intensity - a.intensity).slice(0, count);
+  // Stable copy sorted by prominence/intensity descending
+  const sorted = [...trackers].sort((a, b) => b.intensity - a.intensity).slice(0, targetCount);
+  if (sorted.length === 0) return;
 
   ctx.save();
+  // Readable 10-11px monospace typography
+  const fontSize = Math.max(10, Math.min(11.5, 10.5 * Math.min(1.2, Math.max(0.9, lineWeight * 0.95))));
+  ctx.font = `${fontSize}px "SF Mono", Menlo, Consolas, Monaco, monospace`;
   ctx.lineWidth = Math.max(0.75, lineWeight * 0.9);
-  ctx.font = `${Math.round(8.5 * Math.min(1.3, Math.max(0.85, lineWeight * 0.85)))}px "SF Mono", Menlo, Consolas, monospace`;
-  ctx.textBaseline = 'middle';
+  ctx.lineCap = 'square';
+  ctx.lineJoin = 'miter';
+
+  const lineH = fontSize + 2.5; // ~13px line height
+  const textH = lineH * 2;
+
+  // Precalculate screen positions, pulses, and reticle boxes for all active trackers
+  const trackerMeta: Array<{
+    p: TrackerPoint;
+    px: number;
+    py: number;
+    boxSize: number;
+    tickLen: number;
+    baseAlpha: number;
+    reticleBox: BoundingBox;
+    line1: string;
+    line2: string;
+    textW: number;
+  }> = [];
 
   for (let i = 0; i < sorted.length; i++) {
     const p = sorted[i];
     const px = p.x * width;
     const py = p.y * height;
 
-    // Check canvas bounds
-    if (px < -20 || px > width + 20 || py < -20 || py > height + 20) continue;
+    if (px < -40 || px > width + 40 || py < -40 || py > height + 40) {
+      continue;
+    }
 
-    // Subtle breathing pulse animation based on time and point id
     const pulse = Math.sin(time * 2.5 + p.id * 1.3);
     const boxSize = 8 + p.z * 3 + pulse * 1.0;
     const tickLen = Math.max(2.5, boxSize * 0.4);
-
-    // Alpha modulated by intensity and depth
     const baseAlpha = 0.5 + 0.4 * p.intensity;
-    ctx.strokeStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
-    ctx.fillStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
 
-    // 1. Draw 4 Corner HUD Brackets
-    ctx.beginPath();
-    // Top-Left
-    ctx.moveTo(px - boxSize, py - boxSize + tickLen);
-    ctx.lineTo(px - boxSize, py - boxSize);
-    ctx.lineTo(px - boxSize + tickLen, py - boxSize);
+    const tagId = p.label || `TRK-${String(p.id % 100).padStart(2, '0')}`;
+    const line1 = `${tagId} [Z: ${p.z.toFixed(2)}]`;
+    const line2 = `VAL: ${Math.round(p.intensity * 100)}%`;
 
-    // Top-Right
-    ctx.moveTo(px + boxSize - tickLen, py - boxSize);
-    ctx.lineTo(px + boxSize, py - boxSize);
-    ctx.lineTo(px + boxSize, py - boxSize + tickLen);
+    const w1 = ctx.measureText(line1).width;
+    const w2 = ctx.measureText(line2).width;
+    const textW = Math.max(w1, w2);
 
-    // Bottom-Left
-    ctx.moveTo(px - boxSize, py + boxSize - tickLen);
-    ctx.lineTo(px - boxSize, py + boxSize);
-    ctx.lineTo(px - boxSize + tickLen, py + boxSize);
+    const reticleBox: BoundingBox = {
+      x1: px - boxSize - 2,
+      y1: py - boxSize - 2,
+      x2: px + boxSize + 2,
+      y2: py + boxSize + 2,
+    };
 
-    // Bottom-Right
-    ctx.moveTo(px + boxSize - tickLen, py + boxSize);
-    ctx.lineTo(px + boxSize, py + boxSize);
-    ctx.lineTo(px + boxSize, py + boxSize - tickLen);
-    ctx.stroke();
+    trackerMeta.push({
+      p,
+      px,
+      py,
+      boxSize,
+      tickLen,
+      baseAlpha,
+      reticleBox,
+      line1,
+      line2,
+      textW,
+    });
+  }
 
-    // 2. Center Reticle Pip or Micro Crosshair
-    if (p.intensity > 0.6) {
-      ctx.beginPath();
-      ctx.arc(px, py, 1.2, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.fillRect(px - 0.75, py - 0.75, 1.5, 1.5);
+  const allReticles = trackerMeta.map((m) => m.reticleBox);
+  const placedLabels: BoundingBox[] = [];
+
+  // Dogleg leader line geometric constants
+  const dogX = 8;
+  const dogY = 8;
+  const stubLen = 10;
+
+  for (let i = 0; i < trackerMeta.length; i++) {
+    const meta = trackerMeta[i];
+    const { px, py, boxSize, tickLen, baseAlpha, line1, line2, textW, p } = meta;
+
+    // Build the 4 candidate directions: top-right, bottom-right, top-left, bottom-left
+    const candidateDirs: DirectionCandidate[] = [
+      // 0: top-right
+      (() => {
+        const anchorX = px + boxSize;
+        const anchorY = py - boxSize;
+        const elbowX = anchorX + dogX;
+        const elbowY = anchorY - dogY;
+        const stubX = elbowX + stubLen;
+        const stubY = elbowY;
+        const textX = stubX + 4;
+        const textY = stubY - lineH * 0.5 - 1;
+        return {
+          dir: 'top-right' as Direction,
+          anchorX,
+          anchorY,
+          elbowX,
+          elbowY,
+          stubX,
+          stubY,
+          textX,
+          textY,
+          labelBox: {
+            x1: anchorX - 2,
+            y1: textY - 2,
+            x2: textX + textW + 4,
+            y2: textY + textH + 2,
+          },
+        };
+      })(),
+
+      // 1: bottom-right
+      (() => {
+        const anchorX = px + boxSize;
+        const anchorY = py + boxSize;
+        const elbowX = anchorX + dogX;
+        const elbowY = anchorY + dogY;
+        const stubX = elbowX + stubLen;
+        const stubY = elbowY;
+        const textX = stubX + 4;
+        const textY = stubY - lineH * 0.5 - 1;
+        return {
+          dir: 'bottom-right' as Direction,
+          anchorX,
+          anchorY,
+          elbowX,
+          elbowY,
+          stubX,
+          stubY,
+          textX,
+          textY,
+          labelBox: {
+            x1: anchorX - 2,
+            y1: textY - 2,
+            x2: textX + textW + 4,
+            y2: textY + textH + 2,
+          },
+        };
+      })(),
+
+      // 2: top-left
+      (() => {
+        const anchorX = px - boxSize;
+        const anchorY = py - boxSize;
+        const elbowX = anchorX - dogX;
+        const elbowY = anchorY - dogY;
+        const stubX = elbowX - stubLen;
+        const stubY = elbowY;
+        const textX = stubX - 4 - textW;
+        const textY = stubY - lineH * 0.5 - 1;
+        return {
+          dir: 'top-left' as Direction,
+          anchorX,
+          anchorY,
+          elbowX,
+          elbowY,
+          stubX,
+          stubY,
+          textX,
+          textY,
+          labelBox: {
+            x1: textX - 4,
+            y1: textY - 2,
+            x2: anchorX + 2,
+            y2: textY + textH + 2,
+          },
+        };
+      })(),
+
+      // 3: bottom-left
+      (() => {
+        const anchorX = px - boxSize;
+        const anchorY = py + boxSize;
+        const elbowX = anchorX - dogX;
+        const elbowY = anchorY + dogY;
+        const stubX = elbowX - stubLen;
+        const stubY = elbowY;
+        const textX = stubX - 4 - textW;
+        const textY = stubY - lineH * 0.5 - 1;
+        return {
+          dir: 'bottom-left' as Direction,
+          anchorX,
+          anchorY,
+          elbowX,
+          elbowY,
+          stubX,
+          stubY,
+          textX,
+          textY,
+          labelBox: {
+            x1: textX - 4,
+            y1: textY - 2,
+            x2: anchorX + 2,
+            y2: textY + textH + 2,
+          },
+        };
+      })(),
+    ];
+
+    // Find the first non-colliding direction
+    let chosenCandidate: DirectionCandidate | null = null;
+    const screenMargin = 6;
+
+    for (let d = 0; d < candidateDirs.length; d++) {
+      const cand = candidateDirs[d];
+      const box = cand.labelBox;
+
+      // 1. Boundary check: must stay within canvas viewport
+      if (
+        box.x1 < screenMargin ||
+        box.x2 > width - screenMargin ||
+        box.y1 < screenMargin ||
+        box.y2 > height - screenMargin
+      ) {
+        continue;
+      }
+
+      // 2. Collision with already placed labels (6px safety margin)
+      let collidesWithLabel = false;
+      for (let j = 0; j < placedLabels.length; j++) {
+        if (boxesIntersect(box, placedLabels[j], 6)) {
+          collidesWithLabel = true;
+          break;
+        }
+      }
+      if (collidesWithLabel) continue;
+
+      // 3. Collision with reticles of OTHER trackers (4px safety margin)
+      let collidesWithReticle = false;
+      for (let j = 0; j < allReticles.length; j++) {
+        if (j === i) continue;
+        if (boxesIntersect(box, allReticles[j], 4)) {
+          collidesWithReticle = true;
+          break;
+        }
+      }
+      if (collidesWithReticle) continue;
+
+      // Found a clean non-colliding placement!
+      chosenCandidate = cand;
+      break;
     }
 
-    // 3. Compact Monospace Telemetry Tag
-    // Render leader line and telemetry data
-    const labelX = px + boxSize + 4;
-    const labelY = py - boxSize - 2;
+    if (chosenCandidate) {
+      // Register label bounding box to protect it from subsequent lower-priority trackers
+      placedLabels.push(chosenCandidate.labelBox);
 
-    // Leader dogleg line
+      // Render full HUD brackets, center pip, dogleg leader line, and monospace telemetry
+      renderFullTracker(
+        ctx,
+        px,
+        py,
+        boxSize,
+        tickLen,
+        baseAlpha,
+        p,
+        chosenCandidate,
+        line1,
+        line2,
+        lineH
+      );
+    } else {
+      // Space is constrained or all 4 directions collide:
+      // Collapse label and render ONLY the minimal center reticle pip
+      renderCollapsedTracker(ctx, px, py, baseAlpha, p);
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Render a full HUD tracker with brackets, center reticle, dogleg leader line, and telemetry tags.
+ */
+function renderFullTracker(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  py: number,
+  boxSize: number,
+  tickLen: number,
+  baseAlpha: number,
+  p: TrackerPoint,
+  dir: DirectionCandidate,
+  line1: string,
+  line2: string,
+  lineH: number
+): void {
+  ctx.save();
+  ctx.strokeStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
+  ctx.fillStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
+
+  // 1. Four HUD Corner Brackets
+  ctx.beginPath();
+  // Top-Left
+  ctx.moveTo(px - boxSize, py - boxSize + tickLen);
+  ctx.lineTo(px - boxSize, py - boxSize);
+  ctx.lineTo(px - boxSize + tickLen, py - boxSize);
+
+  // Top-Right
+  ctx.moveTo(px + boxSize - tickLen, py - boxSize);
+  ctx.lineTo(px + boxSize, py - boxSize);
+  ctx.lineTo(px + boxSize, py - boxSize + tickLen);
+
+  // Bottom-Left
+  ctx.moveTo(px - boxSize, py + boxSize - tickLen);
+  ctx.lineTo(px - boxSize, py + boxSize);
+  ctx.lineTo(px - boxSize + tickLen, py + boxSize);
+
+  // Bottom-Right
+  ctx.moveTo(px + boxSize - tickLen, py + boxSize);
+  ctx.lineTo(px + boxSize, py + boxSize);
+  ctx.lineTo(px + boxSize, py + boxSize - tickLen);
+  ctx.stroke();
+
+  // 2. Center Reticle Pip or Micro Crosshair
+  if (p.intensity > 0.6) {
     ctx.beginPath();
-    ctx.moveTo(px + boxSize, py - boxSize);
-    ctx.lineTo(labelX, labelY);
-    ctx.lineTo(labelX + 8, labelY);
+    ctx.arc(px, py, 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillRect(px - 0.75, py - 0.75, 1.5, 1.5);
+  }
+
+  // 3. Dogleg Leader Line
+  ctx.beginPath();
+  ctx.moveTo(dir.anchorX, dir.anchorY);
+  ctx.lineTo(dir.elbowX, dir.elbowY);
+  ctx.lineTo(dir.stubX, dir.stubY);
+  ctx.stroke();
+
+  // 4. Telemetry Text Tags (Real depth & real feature intensity metric)
+  ctx.textBaseline = 'top';
+
+  // Primary tag: crisp, high-luminance cyan-white
+  ctx.fillStyle = `rgba(225, 240, 255, ${(baseAlpha * 0.95).toFixed(2)})`;
+  ctx.fillText(line1, dir.textX, dir.textY);
+
+  // Secondary telemetry: softer ice-blue
+  ctx.fillStyle = `rgba(145, 185, 215, ${(baseAlpha * 0.75).toFixed(2)})`;
+  ctx.fillText(line2, dir.textX, dir.textY + lineH);
+
+  ctx.restore();
+}
+
+/**
+ * Render minimal center reticle pip when label collides or space is constrained.
+ */
+function renderCollapsedTracker(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  py: number,
+  baseAlpha: number,
+  p: TrackerPoint
+): void {
+  ctx.save();
+  const alpha = baseAlpha * 0.75;
+  ctx.strokeStyle = `rgba(100, 210, 255, ${alpha.toFixed(2)})`;
+  ctx.fillStyle = `rgba(100, 210, 255, ${alpha.toFixed(2)})`;
+
+  if (p.intensity > 0.6) {
+    // Micro center dot
+    ctx.beginPath();
+    ctx.arc(px, py, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Precision micro crosshair ticks
+    ctx.beginPath();
+    ctx.moveTo(px - 3.5, py);
+    ctx.lineTo(px - 1.5, py);
+    ctx.moveTo(px + 1.5, py);
+    ctx.lineTo(px + 3.5, py);
+    ctx.moveTo(px, py - 3.5);
+    ctx.lineTo(px, py - 1.5);
+    ctx.moveTo(px, py + 1.5);
+    ctx.lineTo(px, py + 3.5);
     ctx.stroke();
-
-    // Text readouts
-    const tagId = p.label || `TRK-${String(p.id % 100).padStart(2, '0')}`;
-    const zText = `[Z:${p.z.toFixed(2)}]`;
-    const valText = `VAL:${Math.round(p.intensity * 100)}%`;
-
-    // First line
-    ctx.fillStyle = `rgba(220, 235, 248, ${(baseAlpha * 0.95).toFixed(2)})`;
-    ctx.fillText(`${tagId} ${zText}`, labelX + 11, labelY - 2);
-
-    // Second line (fainter telemetry)
-    ctx.fillStyle = `rgba(154, 154, 162, ${(baseAlpha * 0.75).toFixed(2)})`;
-    ctx.fillText(valText, labelX + 11, labelY + 8);
+  } else {
+    ctx.fillRect(px - 1, py - 1, 2, 2);
   }
 
   ctx.restore();

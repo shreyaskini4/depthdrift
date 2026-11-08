@@ -30,6 +30,7 @@ uniform float uPixelRatio;
 uniform float uMorphProgress;
 uniform vec2 uImpulseCenter;
 uniform float uImpulseStrength;
+uniform int uDebug;
 
 // Custom Attributes
 attribute vec3 targetPosition;
@@ -138,7 +139,7 @@ vec3 computeSplash(vec3 p, float seed, float sal, float t) {
   vec2 dir = dist > 0.001 ? normalize(diff) : vec2(0.0, 1.0);
 
   float wave = sin(max(0.0, dist * 12.0 - t * 5.0)) * exp(-dist * 2.5);
-  float impulse = smoothstep(1.0, 0.0, dist) * uSplashStrength;
+  float impulse = (1.0 - smoothstep(0.0, 1.0, dist)) * uSplashStrength;
 
   vec3 burst = vec3(dir * (wave * 0.25 + impulse * 0.4), wave * 0.5 + impulse * 0.3);
   burst += curlNoise(p * 2.5 + t * 0.8) * impulse * 0.2;
@@ -153,7 +154,7 @@ vec3 computeGather(vec3 p, float seed, float sal, float t) {
   vec2 dir = dist > 0.001 ? normalize(toTarget) : vec2(0.0);
   vec2 perp = vec2(-dir.y, dir.x);
 
-  float pull = smoothstep(2.0, 0.05, dist);
+  float pull = 1.0 - smoothstep(0.05, 2.0, dist);
   float swirl = sin(dist * 7.0 - t * 4.0);
   vec2 motion = dir * (pull * 0.5) + perp * (pull * swirl * 0.35);
   float zPull = -pull * 0.2 + sin(t * 2.0 + dist * 6.0) * 0.06;
@@ -170,8 +171,10 @@ vec3 computeDepthMode(vec3 p, float dep, float seed, float sal, float t) {
 // Mode 4: TRAVEL - starfield hyperspace flythrough
 vec3 computeTravel(vec3 p, float seed, float sal, float t) {
   float speed = (0.6 + seed * 0.8) * (uNoiseSpeed + 0.5);
-  float zOff = mod(p.z + t * speed, 2.5) - 1.25;
-  float expand = (zOff + 1.25) * 0.15;
+  float zSpan = 2.6;
+  float zOff = mod(p.z + t * speed, zSpan) - 1.5;
+  zOff = min(zOff, 1.1);
+  float expand = (zOff + 1.5) * 0.18;
   return vec3(p.x * expand, p.y * expand, zOff - p.z);
 }
 
@@ -254,20 +257,28 @@ void main() {
 
   // Transform to clip space
   vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+
+  // Near plane safety guard:
+  // When camera is at [0, 0.1, 2.0] or dollying, ensure points are never behind or clipped by near plane (0.1)
+  if (mvPosition.z > -0.15) {
+    mvPosition.z = -0.15;
+  }
   gl_Position = projectionMatrix * mvPosition;
 
   // Adaptive Point Size with distance attenuation and DPI scaling
   float pSize = uPointSize * uPixelRatio * (0.85 + sal * 0.6);
-  gl_PointSize = clamp(pSize * (2.2 / -mvPosition.z), 1.0, 80.0 * uPixelRatio);
+  float viewDepth = max(0.15, -mvPosition.z);
+  gl_PointSize = max(1.5 * uPixelRatio, clamp(pSize * (2.2 / viewDepth), 1.5 * uPixelRatio, 80.0 * uPixelRatio));
 
   // Color Mode processing
   if (uColorMode == 0) {
-    // TRUE: Source image RGB
-    vColor = baseColor;
+    // TRUE: Source image RGB with subtle luminance floor to prevent pure black from vanishing in AdditiveBlending
+    vColor = max(vec3(0.06), baseColor);
     vAlpha = 0.95;
   } else if (uColorMode == 1) {
-    // NEGATIVE: Inverted colors
-    vColor = vec3(1.0) - baseColor;
+    // NEGATIVE: Inverted colors with minimum contrast floor so inverted white doesn't vanish on dark background
+    vec3 inverted = vec3(1.0) - baseColor;
+    vColor = max(vec3(0.22, 0.22, 0.26), inverted);
     vAlpha = 0.95;
   } else {
     // ON_WHITE: High-contrast ink on white background
@@ -276,6 +287,13 @@ void main() {
     vec3 ink = mix(vec3(0.03, 0.04, 0.06), vec3(0.38, 0.40, 0.45), luma);
     vColor = ink;
     vAlpha = mix(0.95, 0.55, luma);
+  }
+
+  // Debug mode override: flat bright neon cyan, fixed size 4.0 * uPixelRatio, alpha 1.0
+  if (uDebug == 1) {
+    vColor = vec3(0.0, 1.0, 0.8);
+    gl_PointSize = 4.0 * uPixelRatio;
+    vAlpha = 1.0;
   }
 }
 `;
@@ -287,6 +305,7 @@ varying vec3 vColor;
 varying float vAlpha;
 
 uniform int uColorMode;
+uniform int uDebug;
 
 void main() {
   // Distance from center of point [0..1] -> [-0.5..0.5]
@@ -298,7 +317,14 @@ void main() {
     discard;
   }
 
-  float edgeAlpha = smoothstep(0.5, 0.32, dist);
+  // Debug mode renders solid bright neon dots
+  if (uDebug == 1) {
+    gl_FragColor = vec4(vColor, 1.0);
+    return;
+  }
+
+  // Crisp yet soft circular falloff from center to edge (edge0 < edge1)
+  float edgeAlpha = 1.0 - smoothstep(0.35, 0.5, dist);
   float alpha = vAlpha * edgeAlpha;
 
   gl_FragColor = vec4(vColor, alpha);

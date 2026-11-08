@@ -21,6 +21,7 @@ import type {
   DepthWorkerResponse,
 } from '@/types';
 import { createSyntheticDepth } from './synthetic';
+import { computeDepthStats } from './postprocess';
 
 interface PendingRequest {
   resolve: (value?: DepthResult) => void;
@@ -84,6 +85,10 @@ export class DepthEstimatorImpl implements DepthEstimator {
       case 'ESTIMATE_RESULT':
         this.pendingRequests.delete(data.id);
         if (data.result) {
+          const stats = computeDepthStats(data.result.data);
+          console.log(
+            `[Drift Depth] Processed depth: min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+          );
           pending.resolve(data.result);
         } else {
           pending.reject(new Error('Depth worker returned empty result.'));
@@ -278,6 +283,10 @@ export class DepthEstimatorImpl implements DepthEstimator {
     }
 
     const result = createSyntheticDepth(w, h, imgData);
+    const stats = computeDepthStats(result.data);
+    console.log(
+      `[Drift Depth] Processed depth (fallback): min=${stats.min.toFixed(4)}, max=${stats.max.toFixed(4)}, mean=${stats.mean.toFixed(4)}, std=${stats.std.toFixed(4)}`
+    );
 
     if (onProgress) {
       onProgress({

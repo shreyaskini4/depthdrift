@@ -7,14 +7,15 @@ import type { EngineRenderState, OverlaySettings } from '../types';
 
 /**
  * Render technical blueprint registration marks and framing brackets.
+ * Note: Corner text readouts have been relocated to dedicated DOM badges (TelemetryBadge & TopBar)
+ * to prevent layout collisions with interactive header and footer controls.
  */
 export function renderMarks(
   ctx: CanvasRenderingContext2D,
   renderState: EngineRenderState,
   settings: OverlaySettings
 ): void {
-  const { width, height, dpr, fps, particleCount, activeMode, colorMode, cameraPosition, time } =
-    renderState;
+  const { width, height } = renderState;
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
 
   ctx.save();
@@ -116,41 +117,15 @@ export function renderMarks(
   }
   ctx.stroke();
 
-  // 5. Technical Blueprint Monospace Telemetry
+  // 5. Inward Blueprint Monospace Annotations (Inward, away from perimeter UI collisions)
   const fontSize = Math.round(8.5 * Math.min(1.2, Math.max(0.85, lineWeight * 0.85)));
   ctx.font = `${fontSize}px "SF Mono", Menlo, Consolas, Monaco, monospace`;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
-
-  // Top-Left corner telemetry
-  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+  ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillText('DRIFT // OPTICAL TELEMETRY', margin + 6, margin + 4);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.fillText(`SYS: READY | DPR: ${dpr.toFixed(1)}`, margin + 6, margin + 15);
-
-  // Top-Right corner telemetry
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
-  const fpsText = fps > 0 ? `${Math.round(fps)} FPS` : '60 FPS';
-  ctx.fillText(`${fpsText} | ${particleCount.toLocaleString()} PTS`, width - margin - 6, margin + 4);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.fillText(`RES: ${Math.round(width)}x${Math.round(height)}`, width - margin - 6, margin + 15);
-
-  // Bottom-Left corner telemetry
-  ctx.textBaseline = 'bottom';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  const camStr = cameraPosition ? cameraPosition.map((c) => c.toFixed(1)).join(', ') : '0.0, 0.0, 2.0';
-  ctx.fillText(`CAM: [${camStr}]`, margin + 6, height - margin - 15);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
-  ctx.fillText(`MODE: ${activeMode || 'DRIFT'}`, margin + 6, height - margin - 4);
-
-  // Bottom-Right corner telemetry
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.fillText(`PALETTE: ${colorMode || 'TRUE'}`, width - margin - 6, height - margin - 15);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
-  ctx.fillText(`T+${time.toFixed(1)}s`, width - margin - 6, height - margin - 4);
+  ctx.fillText('OPTICAL // RETICLE', cx + 28, cy - 8);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.fillText(`AXIS: 0.0, 0.0`, cx + 28, cy + 8);
 
   ctx.restore();
 }
