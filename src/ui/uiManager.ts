@@ -356,6 +356,11 @@ export class UIManager {
     dpr?: number;
     zoom?: number;
     drift?: { pos: number; angleDeg: number; feather: number };
+    yaw?: number;
+    pitch?: number;
+    panX?: number;
+    panY?: number;
+    pointerTarget?: string;
   }): void {
     this.telemetryBadge.update(data);
     if (data.dpr) {
