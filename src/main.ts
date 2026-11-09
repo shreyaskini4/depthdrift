@@ -173,6 +173,7 @@ class DriftApp {
       onZoomIn: () => this.particleEngine.zoomAt(1.25, 0, 0),
       onZoomOut: () => this.particleEngine.zoomAt(0.8, 0, 0),
       onZoomReset: () => this.particleEngine.resetView(),
+      onDriftChange: (drift) => this.particleEngine.setDrift(drift),
     });
 
     // Initialize Viewport Gestures & Interaction Controller
@@ -449,10 +450,22 @@ class DriftApp {
    * Toggles an overlay layer on or off.
    */
   public toggleOverlay(overlay: OverlayName): void {
-    const cur = !!this.state.settings.overlays.active[overlay];
-    this.state.settings.overlays.active[overlay] = !cur;
+    const currentActive = !!this.particleEngine.getSettings().overlays.active[overlay];
+    const next = !currentActive;
 
-    if (overlay === 'DRAW' && !this.state.settings.overlays.active.DRAW) {
+    this.particleEngine.setSettings({
+      overlays: {
+        ...this.particleEngine.getSettings().overlays,
+        active: {
+          ...this.particleEngine.getSettings().overlays.active,
+          [overlay]: next,
+        },
+      },
+    });
+
+    this.state.settings.overlays = this.particleEngine.getSettings().overlays;
+
+    if (overlay === 'DRAW' && !next) {
       this.overlayRenderer.clearDrawPoints();
     }
 
@@ -477,6 +490,7 @@ class DriftApp {
 
     Object.assign(this.state.settings, partial);
     this.particleEngine.setSettings(this.state.settings);
+    this.state.settings.overlays = this.particleEngine.getSettings().overlays;
     this.uiManager.update({ settings: this.state.settings });
   }
 
@@ -486,6 +500,7 @@ class DriftApp {
   public resetSettings(): void {
     this.state.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
     this.particleEngine.setSettings(this.state.settings);
+    this.state.settings.overlays = this.particleEngine.getSettings().overlays;
     this.particleEngine.setMode(this.state.settings.mode);
     this.particleEngine.setColorMode(this.state.settings.colorMode);
     this.uiManager.update({ settings: this.state.settings });
@@ -634,7 +649,7 @@ class DriftApp {
       const renderState = this.particleEngine.render(timestamp);
 
       // 2. Render 2D overlays synchronized with particle camera and tracker points
-      this.overlayRenderer.render(renderState, this.state.settings.overlays);
+      this.overlayRenderer.render(renderState, renderState.overlays);
 
       // 3. Update real-time HUD telemetry (live FPS from FPSRegulator, dimensions, particles)
       this.uiManager.updateTelemetry(renderState);

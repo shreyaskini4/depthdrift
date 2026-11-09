@@ -2,6 +2,8 @@
  * Shared Type Definitions for Drift - Browser Generative Art Tool
  */
 
+import type { Vector2 } from 'three';
+
 export interface DepthResult {
   width: number;
   height: number;
@@ -89,6 +91,15 @@ export interface TrackerPoint {
   salience?: number;
 }
 
+export interface DriftBar {
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  handle: { x: number; y: number };
+  dir: { x: number; y: number };
+  hovered?: boolean;
+  dragging?: boolean;
+}
+
 export interface EngineRenderState {
   time: number;
   deltaTime: number;
@@ -99,6 +110,7 @@ export interface EngineRenderState {
   particleCount: number;
   activeMode: ModeName;
   colorMode: ColorMode;
+  overlays: OverlaySettings;
   /** Pointer position in canvas space [0..width, 0..height] */
   pointer: { x: number; y: number; isDown: boolean; vx: number; vy: number };
   /** Camera zoom factor (1 = fit / 100%, range [0.5..12]) */
@@ -107,6 +119,10 @@ export interface EngineRenderState {
   panX: number;
   /** Vertical pan offset in physical pixels */
   panY: number;
+  /** Camera orbit yaw angle in radians */
+  yaw: number;
+  /** Camera orbit pitch angle in radians */
+  pitch: number;
   /** Camera projection and view matrix (4x4 Float32Array or array) */
   viewMatrix: Float32Array;
   projectionMatrix: Float32Array;
@@ -131,6 +147,8 @@ export interface EngineRenderState {
   impulseStrength?: number;
   prevMode?: ModeName;
   modeTransition?: number;
+  drift?: { pos: number; angleDeg: number; feather: number };
+  driftBar?: DriftBar;
 }
 
 export interface UserDrawingPoint {
@@ -198,8 +216,16 @@ export interface ParticleEngine {
   zoomAt(factor: number, ndcX?: number, ndcY?: number): void; // ndc -1..1, y up
   setZoom(zoom: number): void;
   panByPixels(dx: number, dy: number): void;
+  orbitByPixels(dx: number, dy: number): void;
+  burstAt(x: number, y: number): void;
+  screenToWorld(x: number, y: number): Vector2;
   resetView(): void;
-  getView(): { zoom: number; panX: number; panY: number };
+  getView(): { zoom: number; panX: number; panY: number; yaw: number; pitch: number };
+  setDrift(partial: Partial<{ pos: number; angleDeg: number; feather: number }>): void;
+  getDrift(): { pos: number; angleDeg: number; feather: number };
+  setDriftFromScreen(x: number, y: number): void;
+  hitDriftBar(x: number, y: number): boolean;
+  setDriftDragging?(dragging: boolean): void;
   render(t?: number): EngineRenderState;
   getRenderState(): EngineRenderState;
   setDebug?(debug: boolean): void;
@@ -212,7 +238,7 @@ export interface ParticleEngine {
 export interface OverlayRenderer {
   readonly canvas: HTMLCanvasElement;
   resize(width: number, height: number, dpr?: number): void;
-  render(renderState: EngineRenderState, settings: OverlaySettings): void;
+  render(renderState: EngineRenderState, settings?: OverlaySettings): void;
   addDrawPoint(x: number, y: number): void;
   clearDrawPoints(): void;
   getDrawPoints(): UserDrawingPoint[];

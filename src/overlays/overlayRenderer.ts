@@ -10,6 +10,7 @@ import type {
   UserDrawingPoint,
 } from '../types';
 import { DrawManager } from './draw';
+import { renderDriftBar } from './driftBar';
 import { renderLinks } from './links';
 import { renderMarks } from './marks';
 import { renderScan } from './scan';
@@ -68,7 +69,7 @@ export class OverlayRendererImpl implements OverlayRenderer {
   /**
    * Main overlay render loop pass. Synchronized with EngineRenderState and OverlaySettings.
    */
-  public render(renderState: EngineRenderState, settings: OverlaySettings): void {
+  public render(renderState: EngineRenderState, settings?: OverlaySettings): void {
     const ctx = this.ctx;
     if (!ctx) return;
 
@@ -91,11 +92,27 @@ export class OverlayRendererImpl implements OverlayRenderer {
     // 2. High-DPI Context Scaling: maps [0..width, 0..height] logical screen coordinates
     ctx.scale(this.dpr, this.dpr);
 
-    const active = settings.active;
+    const currentSettings = renderState.overlays ?? settings ?? {
+      active: {
+        LINKS: false,
+        TRACKERS: true,
+        SCAN: false,
+        TRAILS: false,
+        MARKS: true,
+        DRAW: false,
+      },
+      lineWeight: 1.0,
+      trackerDensity: 0.5,
+      linkDistanceThreshold: 0.05,
+      scanSpeed: 1.0,
+      trailFade: 0.15,
+    };
+
+    const active = currentSettings.active;
 
     // 3. Render TRAILS (Motion trail composite)
     if (active.TRAILS) {
-      this.trailsBuffer.update(renderState, settings);
+      this.trailsBuffer.update(renderState, currentSettings);
       this.trailsBuffer.renderTo(ctx, this.width, this.height);
     } else {
       this.trailsBuffer.clear();
@@ -103,30 +120,35 @@ export class OverlayRendererImpl implements OverlayRenderer {
 
     // 4. Render MARKS (Blueprint corners, registration reticles, telemetry readouts)
     if (active.MARKS) {
-      renderMarks(ctx, renderState, settings);
+      renderMarks(ctx, renderState, currentSettings);
     }
 
     // 5. Render LINKS (Glowing lines connecting salient tracker points)
     if (active.LINKS) {
-      renderLinks(ctx, renderState, settings);
+      renderLinks(ctx, renderState, currentSettings);
     }
 
     // 6. Render TRACKERS (Technical HUD brackets, target reticles, monospace labels)
     if (active.TRACKERS) {
-      renderTrackers(ctx, renderState, settings);
+      renderTrackers(ctx, renderState, currentSettings);
     }
 
     // 7. Render SCAN (Sweeping laser beam, gradient tail, depth slice ping)
     if (active.SCAN) {
-      renderScan(ctx, renderState, settings);
+      renderScan(ctx, renderState, currentSettings);
     }
 
     // 8. Render DRAW (User interactive path ribbons & attraction vector chevrons)
     if (active.DRAW) {
-      this.drawManager.render(ctx, renderState, settings);
+      this.drawManager.render(ctx, renderState, currentSettings);
     } else {
       // Even if inactive, prune expired points to keep memory clean
       this.drawManager.prune(renderState.time || performance.now() / 1000);
+    }
+
+    // 9. Render DRIFT BAR (independent of overlay toggles)
+    if (renderState.driftBar) {
+      renderDriftBar(ctx, renderState.driftBar, renderState.colorMode);
     }
 
     ctx.restore();

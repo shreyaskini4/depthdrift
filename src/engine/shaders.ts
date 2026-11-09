@@ -35,6 +35,9 @@ uniform vec3 uAttractor;      // (x, y, amount 0..1) smoothed attractor for GATH
 uniform int uDebug;
 uniform float uZoom;
 uniform float uIntensity;
+uniform vec2 uDriftAxis;
+uniform float uDriftOrigin;
+uniform float uDriftFeather;
 
 // Custom Attributes
 attribute vec3 sourceColor;
@@ -131,28 +134,43 @@ vec3 curlNoise(vec3 p) {
 float gFade = 1.0;   // per-particle alpha multiplier written by each mode
 float gSeed2 = 0.5;  // randomSeed.y, set at the top of main()
 
+float hash11(float x) { return fract(sin(x * 127.1) * 43758.5453); }
+
 float lifeFade(float ph, float fadeIn, float fadeOutStart) {
   return smoothstep(0.0, fadeIn, ph) * (1.0 - smoothstep(fadeOutStart, 1.0, ph));
 }
 
-// DRIFT: spatially coherent dissolve front, reversible, no teleporting.
-// As cover breathes/shrinks, particles drift back and re-form.
+// DRIFT: one-way drift across dissolve front with cycle fading.
 vec3 computeDrift(vec3 p, float seed, float sal, float t) {
   gFade = 1.0;
-  vec3 idle = curlNoise(vec3(p.xy * uNoiseFrequency, t * 0.2 + seed * 5.0)) * 0.006;
-  vec2 axis = normalize(vec2(1.0, 0.22));          // wind direction
-  float s = clamp(dot(p.xy, axis) / 2.0 + 0.5, 0.0, 1.0);
-  // fraction of the image (from the downwind side) that is dissolving,
-  // breathing slowly between 15% and 55%, starting at 15% at session start
-  float cover = 0.15 + 0.40 * (0.5 - 0.5 * cos(t * (0.08 + uNoiseSpeed * 0.12)));
-  float a = clamp((s + (gSeed2 - 0.5) * 0.35 - (1.0 - cover)) / 0.3, 0.0, 1.0);
-  float travel = a * a * (3.0 - 2.0 * a);
-  float reach = (0.35 + uNoiseStrength * 0.9) * (1.0 - 0.35 * sal) * (0.6 + 0.8 * seed);
-  vec3 wind = vec3(axis, 0.25);
-  vec3 turb = curlNoise(vec3(p.xy * uNoiseFrequency + axis * travel * 0.5,
+  vec3 idle = curlNoise(vec3(p.xy * uNoiseFrequency, t * 0.2 + seed * 5.0)) * 0.005;
+
+  // e: 0 behind the bar, 1 well past it (in the wind direction)
+  float e = smoothstep(0.0, 1.0,
+      (dot(p.xy, uDriftAxis) - uDriftOrigin) / max(uDriftFeather, 0.02));
+  if (e <= 0.0) return idle;
+
+  float rate = 0.05 + uNoiseSpeed * 0.12;
+  float cyc = t * rate + seed;
+  float ph = fract(cyc);
+
+  // each particle joins a given cycle with probability e; the weight eases
+  // in over 0.12 so moving the bar never pops
+  float r = hash11(floor(cyc) * 1.731 + seed * 311.7 + gSeed2 * 17.3);
+  float w = smoothstep(r, r + 0.12, e);
+  if (w <= 0.0) return idle;
+
+  float u = clamp((ph - 0.08) / 0.92, 0.0, 1.0);   // 0 = home, 1 = gone
+  float reach = (0.4 + uNoiseStrength * 0.9) * (0.6 + 0.8 * seed) * (1.0 - 0.3 * sal);
+  vec3 turb = curlNoise(vec3(p.xy * uNoiseFrequency + uDriftAxis * u,
                              t * 0.2 + gSeed2 * 4.0));
-  gFade = 1.0 - smoothstep(0.6, 1.0, a);
-  return (wind + turb * 0.7) * travel * reach + idle;
+  // away: along the wind axis and INTO the screen (never toward the camera)
+  vec3 flow = vec3(uDriftAxis * reach, -0.15 * reach) + turb * 0.35;
+
+  float fadeOut = 1.0 - smoothstep(0.55, 1.0, u);
+  float fadeIn = smoothstep(0.0, 0.06, ph);        // appears in place, never drifts in
+  gFade = mix(1.0, fadeOut * fadeIn, w);
+  return flow * u * w + idle;
 }
 
 // SPLASH: event-driven shockwave from uBurst. Each particle is kicked

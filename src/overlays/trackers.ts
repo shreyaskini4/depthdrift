@@ -83,6 +83,20 @@ export function renderTrackers(
   const textH = lineH * 2;
 
   // Motion parameters for displacement computation
+  let driftAxis: [number, number] | undefined = undefined;
+  let driftOrigin: number | undefined = undefined;
+  let driftFeather: number | undefined = undefined;
+  if (renderState.drift) {
+    const a = (renderState.drift.angleDeg * Math.PI) / 180;
+    const ax = Math.cos(a);
+    const ay = Math.sin(a);
+    driftAxis = [ax, ay];
+    const aspect = renderState.imageAspect || 1.0;
+    const half = 0.5 * (Math.abs(ax) * aspect + Math.abs(ay));
+    driftOrigin = -half + 2 * half * renderState.drift.pos;
+    driftFeather = renderState.drift.feather;
+  }
+
   const dispParams: TrackerDisplacementParams = {
     time: renderState.time,
     depthScale: renderState.depthScale ?? 1.0,
@@ -100,6 +114,9 @@ export function renderTrackers(
     orientation: renderState.orientation ?? [0, 0],
     impulseCenter: renderState.impulseCenter ?? [0, 0],
     impulseStrength: renderState.impulseStrength ?? 0.0,
+    driftAxis,
+    driftOrigin,
+    driftFeather,
   };
 
   // Smooth mode opacity fade policy (Requirement 3: fade out if costly/chaotic)

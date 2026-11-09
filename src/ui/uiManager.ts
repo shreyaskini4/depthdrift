@@ -41,6 +41,7 @@ export interface UIManagerCallbacks {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomReset?: () => void;
+  onDriftChange?: (drift: Partial<{ pos: number; angleDeg: number; feather: number }>) => void;
 }
 
 export class UIManager {
@@ -121,6 +122,13 @@ export class UIManager {
       onZoomIn: () => this.callbacks.onZoomIn?.(),
       onZoomOut: () => this.callbacks.onZoomOut?.(),
       onZoomReset: () => this.callbacks.onZoomReset?.(),
+      onDriftChange: (drift) => this.callbacks.onDriftChange?.(drift),
+      onPopoverToggle: (isOpen) => {
+        if (isOpen) {
+          this.revealChrome();
+        }
+        this.resetActivityTimer();
+      },
     });
 
     // 4. Settings Drawer
@@ -347,6 +355,7 @@ export class UIManager {
     particleCount?: number;
     dpr?: number;
     zoom?: number;
+    drift?: { pos: number; angleDeg: number; feather: number };
   }): void {
     this.telemetryBadge.update(data);
     if (data.dpr) {
@@ -354,6 +363,9 @@ export class UIManager {
     }
     if (data.zoom !== undefined) {
       this.floatingControls.setZoom(data.zoom);
+    }
+    if (data.drift) {
+      this.floatingControls.setDrift(data.drift);
     }
   }
 
@@ -381,7 +393,7 @@ export class UIManager {
   public closeAllModals(): boolean {
     let closedAny = false;
     if (this.floatingControls.getIsOverlaysPopoverOpen()) {
-      this.floatingControls.closeOverlaysPopover();
+      this.floatingControls.closeOverlaysPopover(true);
       closedAny = true;
     }
     if (this.depthDebugModal.getIsOpen()) {

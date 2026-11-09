@@ -13,8 +13,7 @@ import { shuffleParticles } from '../src/engine/sampling';
 const mainSrc = fs.readFileSync('src/main.ts', 'utf-8');
 const pointSizeMatch = mainSrc.match(/pointSize:\s*([0-9.]+)/);
 const defaultPointSize = pointSizeMatch ? parseFloat(pointSizeMatch[1]) : 0;
-const particleCountMatch = mainSrc.match(/particleCount:\s*([0-9_]+)/);
-const defaultParticleCount = particleCountMatch ? parseInt(particleCountMatch[1].replace(/_/g, ''), 10) : 0;
+const hasResponsiveParticleCount = mainSrc.includes('particleCount: isCoarse ? 200_000 : 450_000');
 
 interface TestResult {
   category: string;
@@ -40,25 +39,25 @@ console.log('\n--- 1. STIPPLE PRINT LOOK & SHADER VERIFICATION ---');
 assert(
   'Stipple Specs',
   'Default Point Size',
-  defaultPointSize === 1.3,
-  `Default point size is ${defaultPointSize} (expected 1.3)`
+  defaultPointSize === 1.0,
+  `Default point size is ${defaultPointSize} (expected 1.0 for supersampled stipple dots)`
 );
 
 // Particle count default
 assert(
   'Stipple Specs',
-  'Default Particle Count',
-  defaultParticleCount === 200_000,
-  `Default particle count is ${defaultParticleCount} (expected 200,000)`
+  'Responsive Particle Count (450k Desktop / 200k Coarse)',
+  hasResponsiveParticleCount,
+  'main.ts specifies particleCount: isCoarse ? 200_000 : 450_000'
 );
 
 // Fragment shader edge smoothstep
-const edgeSmoothingMatch = PARTICLE_FRAGMENT_SHADER.includes('1.0 - smoothstep(0.42, 0.5, dist)');
+const edgeSmoothingMatch = PARTICLE_FRAGMENT_SHADER.includes('1.0 - smoothstep(0.38, 0.5, dist)');
 assert(
   'Stipple Specs',
   'Sharp Circular Edge Filter',
   edgeSmoothingMatch,
-  'PARTICLE_FRAGMENT_SHADER contains "1.0 - smoothstep(0.42, 0.5, dist)"'
+  'PARTICLE_FRAGMENT_SHADER contains "1.0 - smoothstep(0.38, 0.5, dist)"'
 );
 
 // Palette check - TRUE: no 0.06 floor
@@ -96,15 +95,15 @@ assert(
 );
 
 // Mode checks in GLSL:
-// Drift cover breathing starts at ~15%
-const driftCoverAtZero = PARTICLE_VERTEX_SHADER.includes(
-  'float cover = 0.15 + 0.40 * (0.5 - 0.5 * cos(t * (0.08 + uNoiseSpeed * 0.12)));'
+// One-way drift shader
+const driftOneWay = PARTICLE_VERTEX_SHADER.includes(
+  '(dot(p.xy, uDriftAxis) - uDriftOrigin) / max(uDriftFeather, 0.02)'
 );
 assert(
   'Modes GLSL',
-  'DRIFT Cover at Session Start',
-  driftCoverAtZero,
-  'DRIFT cover starts at 0.15 (15%) when t=0 and breathes up to 0.55 (55%)'
+  'One-way DRIFT shader with bar & feather',
+  driftOneWay,
+  'DRIFT shader computes front penetration dot(p.xy, uDriftAxis) - uDriftOrigin'
 );
 
 // SPLASH shockwave kick and return

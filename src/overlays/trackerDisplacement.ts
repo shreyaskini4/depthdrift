@@ -36,6 +36,9 @@ export interface TrackerDisplacementParams {
   orientation?: [number, number];
   impulseCenter?: [number, number];
   impulseStrength?: number;
+  driftAxis?: [number, number];
+  driftOrigin?: number;
+  driftFeather?: number;
 }
 
 export interface ProjectResult {
@@ -189,7 +192,15 @@ export function curlNoise(x: number, y: number, z: number): [number, number, num
 // --- Mode Displacement Functions (Matching PARTICLE_VERTEX_SHADER in shaders.ts) ---
 
 /**
- * Mode 0: DRIFT - spatially coherent dissolve front, reversible, no teleporting.
+ * 1D Hash matching GLSL hash11
+ */
+export function hash11(x: number): number {
+  const val = Math.sin(x * 127.1) * 43758.5453;
+  return val - Math.floor(val);
+}
+
+/**
+ * Mode 0: DRIFT - one-way drift across dissolve front with cycle fading.
  */
 export function computeDrift(
   p: [number, number, number],
@@ -199,37 +210,43 @@ export function computeDrift(
   noiseFrequency: number,
   noiseSpeed: number,
   noiseStrength: number,
-  seed2 = 0.5
+  seed2 = 0.5,
+  driftAxis: [number, number] = [1.0, 0.0],
+  driftOrigin = 0.0,
+  driftFeather = 0.02
 ): [number, number, number] {
   const idleCurl = curlNoise(p[0] * noiseFrequency, p[1] * noiseFrequency, t * 0.2 + seed * 5.0);
-  const idle: [number, number, number] = [idleCurl[0] * 0.006, idleCurl[1] * 0.006, idleCurl[2] * 0.006];
+  const idle: [number, number, number] = [idleCurl[0] * 0.005, idleCurl[1] * 0.005, idleCurl[2] * 0.005];
 
-  const axisLen = Math.hypot(1.0, 0.22);
-  const axisX = 1.0 / axisLen;
-  const axisY = 0.22 / axisLen;
+  const dotVal = p[0] * driftAxis[0] + p[1] * driftAxis[1];
+  const denom = Math.max(driftFeather, 0.02);
+  const e = smoothstep(0.0, 1.0, (dotVal - driftOrigin) / denom);
+  if (e <= 0.0) return idle;
 
-  const dotVal = p[0] * axisX + p[1] * axisY;
-  const s = Math.max(0.0, Math.min(1.0, dotVal / 2.0 + 0.5));
-  // fraction of the image dissolving: 15%..55%, starting at 15% at session start
-  const cover = 0.15 + 0.40 * (0.5 - 0.5 * Math.cos(t * (0.08 + noiseSpeed * 0.12)));
-  const a = Math.max(0.0, Math.min(1.0, (s + (seed2 - 0.5) * 0.35 - (1.0 - cover)) / 0.3));
-  const travel = a * a * (3.0 - 2.0 * a);
-  const reach = (0.35 + noiseStrength * 0.9) * (1.0 - 0.35 * sal) * (0.6 + 0.8 * seed);
+  const rate = 0.05 + noiseSpeed * 0.12;
+  const cyc = t * rate + seed;
+  const ph = cyc - Math.floor(cyc);
 
-  const windX = axisX;
-  const windY = axisY;
-  const windZ = 0.25;
+  const r = hash11(Math.floor(cyc) * 1.731 + seed * 311.7 + seed2 * 17.3);
+  const w = smoothstep(r, r + 0.12, e);
+  if (w <= 0.0) return idle;
 
-  const turbCurl = curlNoise(
-    p[0] * noiseFrequency + axisX * travel * 0.5,
-    p[1] * noiseFrequency + axisY * travel * 0.5,
+  const u = Math.max(0.0, Math.min(1.0, (ph - 0.08) / 0.92));
+  const reach = (0.4 + noiseStrength * 0.9) * (0.6 + 0.8 * seed) * (1.0 - 0.3 * sal);
+  const turb = curlNoise(
+    p[0] * noiseFrequency + driftAxis[0] * u,
+    p[1] * noiseFrequency + driftAxis[1] * u,
     t * 0.2 + seed2 * 4.0
   );
 
+  const flowX = driftAxis[0] * reach + turb[0] * 0.35;
+  const flowY = driftAxis[1] * reach + turb[1] * 0.35;
+  const flowZ = -0.15 * reach + turb[2] * 0.35;
+
   return [
-    (windX + turbCurl[0] * 0.7) * travel * reach + idle[0],
-    (windY + turbCurl[1] * 0.7) * travel * reach + idle[1],
-    (windZ + turbCurl[2] * 0.7) * travel * reach + idle[2],
+    flowX * u * w + idle[0],
+    flowY * u * w + idle[1],
+    flowZ * u * w + idle[2],
   ];
 }
 
@@ -388,7 +405,19 @@ export function getModeDisplacement(
   const modeIdx = typeof mode === 'number' ? mode : MODE_INDICES[mode] ?? 0;
   switch (modeIdx) {
     case 0: // DRIFT
-      return computeDrift(p, seed, sal, t, params.noiseFrequency, params.noiseSpeed, params.noiseStrength);
+      return computeDrift(
+        p,
+        seed,
+        sal,
+        t,
+        params.noiseFrequency,
+        params.noiseSpeed,
+        params.noiseStrength,
+        0.5,
+        params.driftAxis,
+        params.driftOrigin,
+        params.driftFeather
+      );
     case 1: // SPLASH
       return computeSplash(p, seed, sal, t, params.splashStrength, params.pointerPos ?? [0, 0]);
     case 2: // GATHER

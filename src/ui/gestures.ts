@@ -1,8 +1,7 @@
 /**
  * Drift - Gestures & Viewport Navigation Controller
- * Handles wheel zooming, trackpad pinch, two-pointer touch pinch & pan,
- * middle-click/shift-drag/hand-tool panning, double-click/tap zoom,
- * and keyboard navigation shortcuts.
+ * Handles spherical orbit, pan, wheel zoom, touch pinch-to-zoom & pan,
+ * keyboard shortcuts, and canvas-isolated interactions.
  */
 
 import type { ModeName, ParticleEngine } from '@/types';
@@ -31,25 +30,35 @@ export interface GestureControllerOptions {
   onHandToolChange?: (active: boolean) => void;
 }
 
-interface PointerCoord {
+interface ActivePointerInfo {
   clientX: number;
   clientY: number;
+  downX: number;
+  downY: number;
+  downTime: number;
+  hasCaptured: boolean;
 }
+
+type DragAction = 'ORBIT' | 'PAN' | 'INTERACT' | 'BAR';
 
 export class GestureController {
   private canvas: HTMLCanvasElement;
   private engine: ParticleEngine;
   private options: GestureControllerOptions;
 
-  // Active pointer map for multi-touch gestures
-  private activePointers = new Map<number, PointerCoord>();
+  // Active pointers for multi-touch & mouse
+  private activePointers = new Map<number, ActivePointerInfo>();
 
   // State flags
   private handToolActive: boolean = false;
-  private isPanning: boolean = false;
-  private isSinglePointerDown: boolean = false;
-  private pinchSuppressedSingle: boolean = false;
+  private isSpaceDown: boolean = false;
+  private isDragging: boolean = false;
+  private currentDragMode: DragAction | null = null;
   private isDestroyed: boolean = false;
+
+  // Pointer hover tracking
+  private lastHoverX: number = -9999;
+  private lastHoverY: number = -9999;
 
   // Pointer position tracking for deltas
   private lastPointerX: number = 0;
@@ -60,9 +69,7 @@ export class GestureController {
   private prevMidX: number = 0;
   private prevMidY: number = 0;
 
-  // Tap & double-tap metrics
-  private pointerDownTime: number = 0;
-  private pointerDownPos = { x: 0, y: 0 };
+  // Double-tap metrics for touch
   private lastTapTime: number = 0;
   private lastTapPos = { x: 0, y: 0 };
   private lastDoubleActionTime: number = 0;
@@ -72,117 +79,119 @@ export class GestureController {
     this.canvas = options.canvas;
     this.engine = options.engine;
 
-    // Apply strict non-blocking gesture rules to canvas & viewport
+    // Apply strict non-blocking gesture rules to canvas
     this.applyViewportStyles();
 
-    // Attach event listeners
+    // Attach event listeners to canvas element only (and window for keys)
     this.attachEvents();
 
     // Initial cursor update
-    this.updateCursor(false);
+    this.updateCursor();
   }
 
   /**
-   * Enforces touch-action: none and overscroll-behavior: none on canvas and viewports
+   * Enforces touch-action: none and overscroll-behavior: none on the canvas element only.
    */
   private applyViewportStyles(): void {
     this.canvas.style.touchAction = 'none';
     this.canvas.style.overscrollBehavior = 'none';
-
-    if (this.canvas.parentElement) {
-      this.canvas.parentElement.style.touchAction = 'none';
-      this.canvas.parentElement.style.overscrollBehavior = 'none';
-    }
-
-    const app = document.getElementById('app');
-    if (app) {
-      app.style.touchAction = 'none';
-      app.style.overscrollBehavior = 'none';
-    }
   }
 
+  /**
+   * Attaches pointer, wheel, dblclick, and contextmenu listeners to the canvas element ONLY.
+   */
   private attachEvents(): void {
-    // Wheel zoom (including trackpad pinch which arrives as wheel with e.ctrlKey=true)
+    // Wheel zoom on canvas
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
 
-    // Pointer events on canvas (captured for consistent multi-touch and mouse dragging)
+    // Pointer events on canvas ONLY
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    window.addEventListener('pointermove', this.onPointerMove, { passive: false });
-    window.addEventListener('pointerup', this.onPointerUp);
-    window.addEventListener('pointercancel', this.onPointerUp);
+    this.canvas.addEventListener('pointermove', this.onPointerMove);
+    this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerUp);
+    this.canvas.addEventListener('pointerleave', this.onPointerLeave);
 
-    // Double-click for mouse
+    // Double-click on canvas ONLY
     this.canvas.addEventListener('dblclick', this.onDoubleClick);
 
-    // Keyboard navigation shortcuts
-    window.addEventListener('keydown', this.onKeyDown);
+    // Context menu prevention on canvas
+    this.canvas.addEventListener('contextmenu', this.onContextMenu);
 
-    // Prevent default browser touch gestures on canvas
+    // Prevent default browser touch scrolling/gestures on canvas
     this.canvas.addEventListener('touchstart', this.preventDefaultTouch, { passive: false });
     this.canvas.addEventListener('touchmove', this.preventDefaultTouch, { passive: false });
+
+    // Global keyboard navigation shortcuts
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onWindowBlur);
   }
 
   private preventDefaultTouch = (e: TouchEvent): void => {
-    e.preventDefault();
+    if (e.target === this.canvas) {
+      e.preventDefault();
+    }
+  };
+
+  private onContextMenu = (e: MouseEvent): void => {
+    if (e.target === this.canvas) {
+      e.preventDefault();
+    }
   };
 
   /**
-   * Evaluates if a single-pointer interaction should pan the view
+   * Determines if a pointer action corresponds to panning.
+   * Right drag, middle drag, Shift + left drag, Space + left drag, or Hand tool.
    */
-  private shouldPanSingle(e: PointerEvent): boolean {
-    // 1. Middle mouse button drag (button 1 or button mask 4)
+  private isPanModifier(e: PointerEvent): boolean {
+    // Right drag (button 2 or buttons & 2)
+    if (e.button === 2 || (e.buttons & 2) !== 0) {
+      return true;
+    }
+    // Middle drag (button 1 or buttons & 4)
     if (e.button === 1 || (e.buttons & 4) !== 0) {
       return true;
     }
-
-    // 2. Shift + Left click drag
+    // Shift + left drag
     if (e.shiftKey && (e.button === 0 || (e.buttons & 1) !== 0)) {
       return true;
     }
-
-    // 3. Hand tool toggle active
-    if (this.handToolActive) {
+    // Space + left drag
+    if (this.isSpaceDown && (e.button === 0 || (e.buttons & 1) !== 0)) {
       return true;
     }
-
-    // 4. In SPLASH, GATHER, and SWARM, single-finger drag is kept for interactive particle effects
-    const mode = this.options.getMode();
-    if (!PAN_ELIGIBLE_MODES.has(mode)) {
-      return false;
-    }
-
-    // 5. Draw overlay active: plain drag is reserved for drawing
-    if (this.options.isDrawActive()) {
-      return false;
-    }
-
-    // 6. Plain drag when zoom > 1.05 and mode is in DRIFT, DEPTH, TRAVEL, MELT
-    const zoom = this.engine.getView().zoom;
-    if (zoom > 1.05) {
+    // Hand tool toggle active
+    if (this.handToolActive && (e.button === 0 || (e.buttons & 1) !== 0)) {
       return true;
     }
-
     return false;
   }
 
   /**
-   * Wheel event handler:
-   * Normalizes deltaMode (pixels, lines, pages).
-   * Computes factor = Math.exp(-deltaY * (e.ctrlKey ? 0.01 : 0.0015)).
-   * Calls engine.zoomAt(factor, ndcX, ndcY) at cursor NDC.
+   * Resolves the active drag mode according to current state and modifiers:
+   * - Pan modifier held: PAN
+   * - Draw overlay ON: plain drag = INTERACT / draw, Alt + left drag = ORBIT
+   * - Draw overlay OFF: plain drag = ORBIT, Alt + left drag = INTERACT
    */
-  private onWheel = (e: WheelEvent): void => {
-    // Ignore wheel if scrolling inside UI modal dialogs or settings drawer
-    const target = e.target as HTMLElement | null;
-    if (
-      target &&
-      target.closest(
-        '.settings-drawer, .depth-debug-modal, .credits-modal, .title-screen'
-      )
-    ) {
-      return;
+  private resolveDragMode(e: PointerEvent): DragAction {
+    if (this.isPanModifier(e)) {
+      return 'PAN';
     }
 
+    const drawActive = this.options.isDrawActive();
+    if (drawActive) {
+      return e.altKey ? 'ORBIT' : 'INTERACT';
+    } else {
+      return e.altKey ? 'INTERACT' : 'ORBIT';
+    }
+  }
+
+  /**
+   * Wheel event handler:
+   * factor = Math.exp(-deltaY * (e.ctrlKey ? 0.01 : 0.0015)); engine.zoomAt(factor, ndcX, ndcY);
+   */
+  private onWheel = (e: WheelEvent): void => {
+    if (e.target !== this.canvas) return;
     e.preventDefault();
 
     let deltaY = e.deltaY;
@@ -199,41 +208,28 @@ export class GestureController {
     const ndcY = -(((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
 
     this.engine.zoomAt(factor, ndcX, ndcY);
-    this.updateCursor(false);
+    this.updateCursor();
   };
 
   /**
-   * Pointer down handler: tracks active pointers and resolves single vs multi-touch gesture
+   * Pointer down handler: registers pointer, sets initial state without capturing immediately.
    */
   private onPointerDown = (e: PointerEvent): void => {
-    // Ignore clicks on semantic UI buttons/controls outside canvas
-    const target = e.target as HTMLElement | null;
-    if (
-      target &&
-      target.closest('.ui-layer') &&
-      !target.classList.contains('canvas-layer')
-    ) {
-      return;
-    }
+    if (e.target !== this.canvas) return;
 
     this.activePointers.set(e.pointerId, {
       clientX: e.clientX,
       clientY: e.clientY,
+      downX: e.clientX,
+      downY: e.clientY,
+      downTime: performance.now(),
+      hasCaptured: false,
     });
 
-    try {
-      this.canvas.setPointerCapture(e.pointerId);
-    } catch {
-      // Ignored if target cannot capture pointer
-    }
-
     if (this.activePointers.size >= 2) {
-      // Transitioning to two-pointer pinch/pan
-      this.pinchSuppressedSingle = true;
-      this.isSinglePointerDown = false;
-      this.isPanning = true;
-
-      // While two fingers are down, release/suppress any single-pointer interaction with the particle engine
+      // 2 fingers on touch: pinch-zoom and pan together
+      this.currentDragMode = 'PAN';
+      this.isDragging = true;
       this.engine.setPointer(e.clientX, e.clientY, false);
 
       const pts = Array.from(this.activePointers.values());
@@ -243,61 +239,74 @@ export class GestureController {
       this.prevMidX = (p1.clientX + p2.clientX) / 2;
       this.prevMidY = (p1.clientY + p2.clientY) / 2;
 
-      this.updateCursor(true);
+      this.updateCursor();
       return;
     }
 
     // Single pointer down
-    this.pinchSuppressedSingle = false;
-    this.pointerDownTime = performance.now();
-    this.pointerDownPos = { x: e.clientX, y: e.clientY };
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
+    this.isDragging = false;
 
-    const isPan = this.shouldPanSingle(e);
-
-    if (isPan) {
-      this.isPanning = true;
-      this.isSinglePointerDown = false;
+    // Check DRIFT bar hit on pointerdown (takes priority over orbit)
+    if (this.options.getMode() === 'DRIFT' && this.engine.hitDriftBar(e.clientX, e.clientY)) {
+      this.currentDragMode = 'BAR';
+      this.isDragging = true;
+      this.engine.setDriftDragging?.(true);
+      this.engine.setDriftFromScreen(e.clientX, e.clientY);
+      const pt = this.activePointers.get(e.pointerId);
+      if (pt && !pt.hasCaptured) {
+        pt.hasCaptured = true;
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignored
+        }
+      }
       this.engine.setPointer(e.clientX, e.clientY, false);
-      this.updateCursor(true);
-    } else {
-      this.isPanning = false;
-      this.isSinglePointerDown = true;
+      this.updateCursor();
+      return;
+    }
 
+    this.currentDragMode = this.resolveDragMode(e);
+
+    if (this.currentDragMode === 'INTERACT') {
       if (this.options.isDrawActive()) {
         this.options.onDrawPoint?.(e.clientX, e.clientY);
       } else {
-        this.engine.setPointer(e.clientX, e.clientY, true);
+        // Alt + left drag: burst on press when in SPLASH mode
+        if (this.options.getMode() === 'SPLASH') {
+          this.engine.burstAt(e.clientX, e.clientY);
+        }
       }
-      this.updateCursor(false);
+      this.engine.setPointer(e.clientX, e.clientY, true);
+    } else {
+      // For ORBIT and PAN, do not trigger interactive down
+      this.engine.setPointer(e.clientX, e.clientY, false);
     }
+
+    this.updateCursor();
   };
 
   /**
-   * Pointer move handler: manages two-pointer pinch/pan, single-pointer pan,
-   * single-pointer draw, particle interaction, and hover parallax.
+   * Pointer move handler: manages 2-finger pinch/pan, single-pointer orbit, pan, or interact.
+   * Sets pointer capture only after a drag begins (threshold >= 3px).
    */
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.activePointers.has(e.pointerId)) {
-      // Hover event when no buttons are held down
-      if (this.activePointers.size === 0) {
-        const isOverUI =
-          (e.target as HTMLElement | null)?.closest('.ui-layer') &&
-          !(e.target as HTMLElement | null)?.classList.contains('canvas-layer');
-        if (!isOverUI) {
-          this.engine.setPointer(e.clientX, e.clientY, false);
-          this.updateCursor(false);
-        }
+      // Hover event when no buttons are held
+      this.lastHoverX = e.clientX;
+      this.lastHoverY = e.clientY;
+      if (this.activePointers.size === 0 && e.target === this.canvas) {
+        this.engine.setPointer(e.clientX, e.clientY, false);
+        this.updateCursor();
       }
       return;
     }
 
-    // Update active pointer position
-    this.activePointers.set(e.pointerId, {
-      clientX: e.clientX,
-      clientY: e.clientY,
-    });
+    const pt = this.activePointers.get(e.pointerId)!;
+    pt.clientX = e.clientX;
+    pt.clientY = e.clientY;
 
     // --- TWO-POINTER PINCH & PAN ---
     if (this.activePointers.size >= 2) {
@@ -318,7 +327,6 @@ export class GestureController {
         const midNdcX = ((midX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
         const midNdcY = -(((midY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
 
-        // Apply zoom ratio centered at midpoint NDC
         if (
           Math.abs(distanceRatio - 1) > 0.0005 &&
           distanceRatio > 0.2 &&
@@ -327,7 +335,6 @@ export class GestureController {
           this.engine.zoomAt(distanceRatio, midNdcX, midNdcY);
         }
 
-        // Apply midpoint translation
         if (Math.abs(midDeltaX) > 0.01 || Math.abs(midDeltaY) > 0.01) {
           this.engine.panByPixels(midDeltaX, midDeltaY);
         }
@@ -337,18 +344,24 @@ export class GestureController {
       this.prevMidX = midX;
       this.prevMidY = midY;
 
-      // Keep single-pointer interaction suppressed
       this.engine.setPointer(midX, midY, false);
-      this.updateCursor(true);
+      this.updateCursor();
       return;
     }
 
     // --- SINGLE-POINTER DRAG ---
-    if (this.pinchSuppressedSingle) {
-      // Transitioning after pinch gesture: absorb initial delta to avoid jump
-      this.lastPointerX = e.clientX;
-      this.lastPointerY = e.clientY;
-      return;
+    const moveDist = Math.hypot(e.clientX - pt.downX, e.clientY - pt.downY);
+
+    if (!this.isDragging && moveDist >= 3) {
+      this.isDragging = true;
+      if (!pt.hasCaptured) {
+        pt.hasCaptured = true;
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignored if target cannot capture pointer
+        }
+      }
     }
 
     const dx = e.clientX - this.lastPointerX;
@@ -356,30 +369,51 @@ export class GestureController {
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
 
-    if (this.isPanning) {
-      this.engine.panByPixels(dx, dy);
+    const mode = this.currentDragMode ?? this.resolveDragMode(e);
+
+    if (mode === 'BAR') {
+      this.engine.setDriftFromScreen(e.clientX, e.clientY);
       this.engine.setPointer(e.clientX, e.clientY, false);
-      this.updateCursor(true);
-    } else {
-      if (this.options.isDrawActive() && this.isSinglePointerDown) {
-        this.options.onDrawPoint?.(e.clientX, e.clientY);
-      } else {
-        this.engine.setPointer(e.clientX, e.clientY, this.isSinglePointerDown);
+      this.updateCursor();
+      return;
+    } else if (mode === 'ORBIT') {
+      if (this.isDragging) {
+        this.engine.orbitByPixels(dx, dy);
       }
-      this.updateCursor(false);
+      this.engine.setPointer(e.clientX, e.clientY, false);
+    } else if (mode === 'PAN') {
+      if (this.isDragging) {
+        this.engine.panByPixels(dx, dy);
+      }
+      this.engine.setPointer(e.clientX, e.clientY, false);
+    } else if (mode === 'INTERACT') {
+      if (this.options.isDrawActive()) {
+        this.options.onDrawPoint?.(e.clientX, e.clientY);
+      }
+      this.engine.setPointer(e.clientX, e.clientY, true);
     }
+
+    this.updateCursor();
   };
 
   /**
    * Pointer up / cancel handler
    */
   private onPointerUp = (e: PointerEvent): void => {
-    try {
-      if (this.canvas.hasPointerCapture(e.pointerId)) {
-        this.canvas.releasePointerCapture(e.pointerId);
+    if (!this.activePointers.has(e.pointerId)) return;
+
+    const pt = this.activePointers.get(e.pointerId)!;
+    const duration = performance.now() - pt.downTime;
+    const moveDist = Math.hypot(e.clientX - pt.downX, e.clientY - pt.downY);
+
+    if (pt.hasCaptured) {
+      try {
+        if (this.canvas.hasPointerCapture(e.pointerId)) {
+          this.canvas.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignored
       }
-    } catch {
-      // Ignored
     }
 
     this.activePointers.delete(e.pointerId);
@@ -387,147 +421,135 @@ export class GestureController {
     // If still 2 or more pointers active
     if (this.activePointers.size >= 2) {
       const pts = Array.from(this.activePointers.values());
-      const p1 = pts[0];
-      const p2 = pts[1];
-      this.prevPinchDistance = Math.hypot(p2.clientX - p1.clientX, p2.clientY - p1.clientY);
-      this.prevMidX = (p1.clientX + p2.clientX) / 2;
-      this.prevMidY = (p1.clientY + p2.clientY) / 2;
+      this.prevPinchDistance = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
+      this.prevMidX = (pts[0].clientX + pts[1].clientX) / 2;
+      this.prevMidY = (pts[0].clientY + pts[1].clientY) / 2;
       return;
     }
 
     // If 1 pointer remains after pinch
     if (this.activePointers.size === 1) {
       this.prevPinchDistance = 0;
-      this.pinchSuppressedSingle = true;
       const remaining = this.activePointers.values().next().value;
       if (remaining) {
         this.lastPointerX = remaining.clientX;
         this.lastPointerY = remaining.clientY;
       }
+      this.isDragging = false;
+      this.currentDragMode = null;
       return;
     }
 
-    // All pointers released (count === 0)
-    const hadPinch = this.pinchSuppressedSingle;
-    this.prevPinchDistance = 0;
-    this.pinchSuppressedSingle = false;
-    const wasPanning = this.isPanning;
-    this.isPanning = false;
-    this.isSinglePointerDown = false;
+    // All pointers released
+    const wasDragging = this.isDragging;
+    const prevDragMode = this.currentDragMode;
+    this.isDragging = false;
+    this.currentDragMode = null;
 
-    this.engine.setPointer(e.clientX, e.clientY, false);
-    this.updateCursor(false);
+    if (prevDragMode === 'BAR') {
+      this.engine.setDriftDragging?.(false);
+    }
 
     if (this.options.isDrawActive()) {
       this.options.onDrawEnd?.();
     }
 
-    // Touch double-tap detection
-    if (!wasPanning && !hadPinch && e.pointerType === 'touch') {
-      const duration = performance.now() - this.pointerDownTime;
-      const moveDist = Math.hypot(
-        e.clientX - this.pointerDownPos.x,
-        e.clientY - this.pointerDownPos.y
-      );
+    this.engine.setPointer(e.clientX, e.clientY, false);
+    this.updateCursor();
 
-      if (duration < 320 && moveDist < 20) {
-        const now = performance.now();
-        const timeSinceLastTap = now - this.lastTapTime;
-        const tapDist = Math.hypot(
-          e.clientX - this.lastTapPos.x,
-          e.clientY - this.lastTapPos.y
-        );
+    // Tap in SPLASH (moved < 5px and duration < 350ms): engine.burstAt(x, y)
+    if (!wasDragging && moveDist < 5 && duration < 350) {
+      if (this.options.getMode() === 'SPLASH') {
+        this.engine.burstAt(e.clientX, e.clientY);
+      }
+    }
 
-        if (timeSinceLastTap > 40 && timeSinceLastTap < 350 && tapDist < 35) {
-          this.lastDoubleActionTime = now;
-          this.handleDoubleAction(e.clientX, e.clientY);
-          this.lastTapTime = 0;
-        } else {
-          this.lastTapTime = now;
-          this.lastTapPos = { x: e.clientX, y: e.clientY };
-        }
+    // Touch double-tap detection to reset view
+    if (e.pointerType === 'touch' && !wasDragging && moveDist < 15 && duration < 320) {
+      const now = performance.now();
+      const timeSinceLastTap = now - this.lastTapTime;
+      const tapDist = Math.hypot(e.clientX - this.lastTapPos.x, e.clientY - this.lastTapPos.y);
+
+      if (timeSinceLastTap > 40 && timeSinceLastTap < 350 && tapDist < 35) {
+        this.lastDoubleActionTime = now;
+        this.engine.resetView();
+        this.lastTapTime = 0;
+      } else {
+        this.lastTapTime = now;
+        this.lastTapPos = { x: e.clientX, y: e.clientY };
       }
     }
   };
 
   /**
-   * Double-click event handler (desktop mouse)
+   * Pointer leave handler: clears hover pointer when not dragging
    */
-  private onDoubleClick = (e: MouseEvent): void => {
-    // Ignore if touch double-tap recently handled this gesture
-    if (performance.now() - this.lastDoubleActionTime < 450) {
-      return;
+  private onPointerLeave = (e: PointerEvent): void => {
+    this.lastHoverX = -9999;
+    this.lastHoverY = -9999;
+    if (this.activePointers.size === 0 && e.target === this.canvas) {
+      this.engine.setPointer(9999, 9999, false);
+      this.updateCursor();
     }
-
-    const target = e.target as HTMLElement | null;
-    if (
-      target &&
-      target.closest('.ui-layer') &&
-      !target.classList.contains('canvas-layer')
-    ) {
-      return;
-    }
-
-    this.lastDoubleActionTime = performance.now();
-    this.handleDoubleAction(e.clientX, e.clientY);
   };
 
   /**
-   * Double-tap / Double-click execution:
-   * If already zoomed (> 1.2), reset view.
-   * If not zoomed, zoom 2.5x centered at click NDC.
+   * Double-click on canvas (not on Drift bar): resets view back to defaults.
    */
-  private handleDoubleAction(clientX: number, clientY: number): void {
-    const currentZoom = this.engine.getView().zoom;
-    if (currentZoom > 1.2) {
-      this.engine.resetView();
-    } else {
-      const rect = this.canvas.getBoundingClientRect();
-      const clickNdcX = ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
-      const clickNdcY = -(((clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
-      this.engine.zoomAt(2.5, clickNdcX, clickNdcY);
-    }
-    this.updateCursor(false);
+  private onDoubleClick = (e: MouseEvent): void => {
+    if (e.target !== this.canvas) return;
+    if (performance.now() - this.lastDoubleActionTime < 450) return;
+    this.lastDoubleActionTime = performance.now();
+    this.engine.resetView();
+    this.updateCursor();
+  };
+
+  private isTextInput(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    return !!(
+      el &&
+      (el.tagName === 'INPUT' ||
+        el.tagName === 'TEXTAREA' ||
+        el.isContentEditable)
+    );
   }
 
   /**
    * Keyboard shortcuts:
-   * + / = -> zoom in 1.25x (zoomAt(1.25, 0, 0))
-   * - / _ -> zoom out 0.8x (zoomAt(0.8, 0, 0))
-   * 0 -> reset view (resetView())
-   * Arrow keys -> pan only when zoom > 1.05 (panByPixels by 40px)
-   * H -> Hand tool toggle
-   * Space and 1-7 keys are not captured so main application bindings are preserved.
+   * '+' / '-' -> zoom
+   * '0' -> resetView()
+   * Arrow keys -> pan only when zoom > 1
+   * 'h' / 'H' -> toggle hand tool
+   * Space -> hold to pan
    */
   private onKeyDown = (e: KeyboardEvent): void => {
-    // Ignore when focus is inside text inputs
-    const target = e.target as HTMLElement | null;
-    if (
-      target &&
-      (target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable)
-    ) {
+    if (this.isTextInput(e.target)) return;
+
+    // Space key tracking for Space + left drag PAN
+    if (e.code === 'Space') {
+      e.preventDefault();
+      this.isSpaceDown = true;
+      this.updateCursor();
       return;
     }
 
-    // Zoom In: '+' or '='
+    // Zoom In: '+' or '=' or NumpadAdd
     if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
       e.preventDefault();
       this.engine.zoomAt(1.25, 0, 0);
-      this.updateCursor(false);
+      this.updateCursor();
       return;
     }
 
-    // Zoom Out: '-' or '_'
+    // Zoom Out: '-' or '_' or NumpadSubtract
     if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
       e.preventDefault();
       this.engine.zoomAt(0.8, 0, 0);
-      this.updateCursor(false);
+      this.updateCursor();
       return;
     }
 
-    // Reset View: '0'
+    // Reset View: key '0'
     if (
       (e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0') &&
       !e.ctrlKey &&
@@ -536,13 +558,13 @@ export class GestureController {
     ) {
       e.preventDefault();
       this.engine.resetView();
-      this.updateCursor(false);
+      this.updateCursor();
       return;
     }
 
-    // Arrow keys: pan only when zoom > 1.05
+    // Arrow keys: pan only when zoom > 1
     const zoom = this.engine.getView().zoom;
-    if (zoom > 1.05) {
+    if (zoom > 1.0) {
       const step = 40;
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
@@ -574,6 +596,18 @@ export class GestureController {
     }
   };
 
+  private onKeyUp = (e: KeyboardEvent): void => {
+    if (e.code === 'Space') {
+      this.isSpaceDown = false;
+      this.updateCursor();
+    }
+  };
+
+  private onWindowBlur = (): void => {
+    this.isSpaceDown = false;
+    this.updateCursor();
+  };
+
   /**
    * Toggles the Hand tool on or off
    */
@@ -587,7 +621,7 @@ export class GestureController {
   public setHandToolActive(active: boolean): boolean {
     if (this.handToolActive !== active) {
       this.handToolActive = active;
-      this.updateCursor(false);
+      this.updateCursor();
       this.options.onHandToolChange?.(active);
     }
     return this.handToolActive;
@@ -600,19 +634,56 @@ export class GestureController {
     return this.handToolActive;
   }
 
+  private getDriftBarCursor(): string {
+    const drift = this.engine.getDrift();
+    const deg = ((drift.angleDeg % 360) + 360) % 360;
+    // Horizontal drift (0° or 180°): the bar is vertical and moves left/right -> ew-resize
+    if ((deg >= 337.5 || deg <= 22.5) || (deg >= 157.5 && deg <= 202.5)) {
+      return 'ew-resize';
+    }
+    // Vertical drift (90° or 270°): the bar is horizontal and moves up/down -> ns-resize
+    if ((deg >= 67.5 && deg <= 112.5) || (deg >= 247.5 && deg <= 292.5)) {
+      return 'ns-resize';
+    }
+    return 'move';
+  }
+
   /**
-   * Updates canvas cursor styling depending on zoom, pan mode, draw mode, and dragging state
+   * Updates canvas cursor styling:
+   * - 'ew-resize' / 'ns-resize' / 'move' while hovering/dragging DRIFT bar
+   * - 'grabbing' while orbiting
+   * - 'move' while panning
+   * - 'crosshair' when drawing
+   * - 'grab' when idle/hovering
    */
-  public updateCursor(isDragging: boolean = false): void {
+  public updateCursor(_isDragging?: boolean): void {
     if (this.isDestroyed) return;
 
-    if (isDragging) {
-      this.canvas.style.cursor = 'grabbing';
-      return;
+    if (this.isDragging) {
+      if (this.currentDragMode === 'BAR') {
+        this.canvas.style.cursor = this.getDriftBarCursor();
+        return;
+      }
+      if (this.currentDragMode === 'ORBIT') {
+        this.canvas.style.cursor = 'grabbing';
+        return;
+      }
+      if (this.currentDragMode === 'PAN') {
+        this.canvas.style.cursor = 'move';
+        return;
+      }
+      if (this.currentDragMode === 'INTERACT') {
+        this.canvas.style.cursor = this.options.isDrawActive() ? 'crosshair' : 'default';
+        return;
+      }
     }
 
-    if (this.handToolActive) {
-      this.canvas.style.cursor = 'grab';
+    // Hovering over DRIFT bar in DRIFT mode
+    if (
+      this.options.getMode() === 'DRIFT' &&
+      this.engine.hitDriftBar(this.lastHoverX, this.lastHoverY)
+    ) {
+      this.canvas.style.cursor = this.getDriftBarCursor();
       return;
     }
 
@@ -621,14 +692,12 @@ export class GestureController {
       return;
     }
 
-    const zoom = this.engine.getView().zoom;
-    const mode = this.options.getMode();
-    if (zoom > 1.05 && PAN_ELIGIBLE_MODES.has(mode)) {
-      this.canvas.style.cursor = 'grab';
+    if (this.handToolActive || this.isSpaceDown) {
+      this.canvas.style.cursor = 'move';
       return;
     }
 
-    this.canvas.style.cursor = '';
+    this.canvas.style.cursor = 'grab';
   }
 
   /**
@@ -638,13 +707,18 @@ export class GestureController {
     this.isDestroyed = true;
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
-    window.removeEventListener('pointermove', this.onPointerMove);
-    window.removeEventListener('pointerup', this.onPointerUp);
-    window.removeEventListener('pointercancel', this.onPointerUp);
+    this.canvas.removeEventListener('pointermove', this.onPointerMove);
+    this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerUp);
+    this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
-    window.removeEventListener('keydown', this.onKeyDown);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     this.canvas.removeEventListener('touchstart', this.preventDefaultTouch);
     this.canvas.removeEventListener('touchmove', this.preventDefaultTouch);
+
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onWindowBlur);
     this.activePointers.clear();
   }
 }

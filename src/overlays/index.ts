@@ -4,6 +4,7 @@
  */
 
 export * from './draw';
+export * from './driftBar';
 export * from './links';
 export * from './marks';
 export * from './overlayRenderer';

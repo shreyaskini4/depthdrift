@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import type {
   ColorMode,
   DepthResult,
+  DriftBar,
   EngineRenderState,
   ModeName,
   ParticleEngine,
@@ -44,6 +45,11 @@ export const COLOR_MODE_INDICES: Record<ColorMode, number> = {
   NEGATIVE: 1,
   ON_WHITE: 2,
 };
+
+export const MAX_YAW = (Math.PI * 70) / 180;
+export const MAX_PITCH = (Math.PI * 45) / 180;
+export const MIN_ZOOM = 0.5;
+export const MAX_ZOOM = 12.0;
 
 export class ThreeParticleEngine implements ParticleEngine {
   public readonly canvas: HTMLCanvasElement;
@@ -94,18 +100,32 @@ export class ThreeParticleEngine implements ParticleEngine {
   private baseCamZ = 2.0;
   private travelBlend: number = 0;
 
-  // View pan and zoom state
-  private zoom: number = 1.0;
-  private zoomTarget: number = 1.0;
-  private pan: THREE.Vector2 = new THREE.Vector2(0, 0);
-  private panTarget: THREE.Vector2 = new THREE.Vector2(0, 0);
-  private smoothParallax: THREE.Vector2 = new THREE.Vector2(0, 0);
+  // Spherical orbit, pan, and zoom state
+  private view = {
+    zoom: 1,
+    zoomT: 1,
+    panX: 0,
+    panY: 0,
+    panTX: 0,
+    panTY: 0,
+    yaw: 0,
+    yawT: 0,
+    pitch: 0,
+    pitchT: 0,
+  };
 
   // Render timing & caching
   private startMs: number = typeof performance !== 'undefined' ? performance.now() : Date.now();
   private lastTime: number = -1;
   private latestRenderState: EngineRenderState | null = null;
   private tempVec = new THREE.Vector3();
+  private tempDriftAxis = new THREE.Vector2(1, 0);
+
+  // Drift state
+  public drift = { pos: 0.65, angleDeg: 0, feather: 0.35 };
+  private posSmooth: number = 0.65;
+  private isDriftDragging: boolean = false;
+  private currentDriftBar: DriftBar | null = null;
 
   constructor(canvas?: HTMLCanvasElement, initialSettings?: Partial<ParticleSettings>) {
     this.canvas = canvas ?? document.createElement('canvas');
@@ -178,7 +198,7 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 50);
-    this.camera.zoom = this.zoom;
+    this.camera.zoom = this.view.zoom;
     this.fitCamera();
     this.camera.lookAt(0, 0, 0);
 
@@ -232,12 +252,15 @@ export class ThreeParticleEngine implements ParticleEngine {
         uAttractor: { value: new THREE.Vector3(0, 0, 0.6) },
         uOrientation: { value: new THREE.Vector2(0, 0) },
         uPixelRatio: { value: this.dpr },
-        uZoom: { value: this.zoom },
+        uZoom: { value: this.view.zoom },
         uIntensity: { value: this.settings.intensity },
         uMorphProgress: { value: 0.0 },
         uImpulseCenter: { value: new THREE.Vector2(0, 0) },
         uImpulseStrength: { value: 0.0 },
         uDebug: { value: isDebug ? 1 : 0 },
+        uDriftAxis: { value: new THREE.Vector2(1, 0) },
+        uDriftOrigin: { value: 0 },
+        uDriftFeather: { value: 0.35 },
       },
       transparent: true,
       depthTest: false,
@@ -535,17 +558,10 @@ export class ThreeParticleEngine implements ParticleEngine {
     this.updateClearColor(colorMode);
   }
 
-  public setPointer(x: number, y: number, isDown: boolean): void {
-    const pressed = isDown && !this.pointerState.isDown;
-    this.pointerState.x = x;
-    this.pointerState.y = y;
-    this.pointerState.isDown = isDown;
-
-    // Convert screen coordinates to world coordinates on the Z=0 plane
+  public screenToWorld(x: number, y: number): THREE.Vector2 {
     const ndcX = (x / Math.max(1, this.width)) * 2 - 1;
     const ndcY = -(y / Math.max(1, this.height)) * 2 + 1;
 
-    // Raycast to Z=0 plane using live camera position and projection
     this.camera.updateMatrixWorld();
     this.tempVec.set(ndcX, ndcY, 0.5).unproject(this.camera);
     const dir = this.tempVec.sub(this.camera.position).normalize();
@@ -553,9 +569,79 @@ export class ThreeParticleEngine implements ParticleEngine {
     const worldX = this.camera.position.x + dir.x * distance;
     const worldY = this.camera.position.y + dir.y * distance;
 
-    if (pressed && this.settings.mode === 'SPLASH') {
-      this.triggerBurst(worldX, worldY);
+    return new THREE.Vector2(worldX, worldY);
+  }
+
+  public setDrift(partial: Partial<{ pos: number; angleDeg: number; feather: number }>): void {
+    if (partial.pos !== undefined) {
+      this.drift.pos = THREE.MathUtils.clamp(partial.pos, 0, 1);
     }
+    if (partial.angleDeg !== undefined) {
+      this.drift.angleDeg = partial.angleDeg;
+    }
+    if (partial.feather !== undefined) {
+      this.drift.feather = THREE.MathUtils.clamp(partial.feather, 0.01, 2.0);
+    }
+  }
+
+  public getDrift(): { pos: number; angleDeg: number; feather: number } {
+    return { ...this.drift };
+  }
+
+  public setDriftFromScreen(x: number, y: number): void {
+    const w = this.screenToWorld(x, y);
+    const a = THREE.MathUtils.degToRad(this.drift.angleDeg);
+    const axis = new THREE.Vector2(Math.cos(a), Math.sin(a));
+    const half = 0.5 * (Math.abs(axis.x) * this.imageAspect + Math.abs(axis.y));
+    if (half <= 1e-6) return;
+    const s = w.x * axis.x + w.y * axis.y;
+    this.drift.pos = THREE.MathUtils.clamp((s + half) / (2 * half), 0, 1);
+  }
+
+  private distToSegment(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number
+  ): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-6) {
+      return Math.hypot(px - ax, py - ay);
+    }
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+    const projX = ax + t * dx;
+    const projY = ay + t * dy;
+    return Math.hypot(px - projX, py - projY);
+  }
+
+  public hitDriftBar(x: number, y: number): boolean {
+    if (this.settings.mode !== 'DRIFT') return false;
+    const bar = this.latestRenderState?.driftBar ?? this.currentDriftBar;
+    if (!bar) return false;
+    return this.distToSegment(x, y, bar.a.x, bar.a.y, bar.b.x, bar.b.y) <= 14;
+  }
+
+  public setDriftDragging(dragging: boolean): void {
+    this.isDriftDragging = dragging;
+  }
+
+  public burstAt(x: number, y: number): void {
+    const world = this.screenToWorld(x, y);
+    this.triggerBurst(world.x, world.y);
+  }
+
+  public setPointer(x: number, y: number, isDown: boolean): void {
+    this.pointerState.x = x;
+    this.pointerState.y = y;
+    this.pointerState.isDown = isDown;
+
+    const world = this.screenToWorld(x, y);
+    const worldX = world.x;
+    const worldY = world.y;
 
     const now = performance.now();
     const dt = Math.max(0.001, (now - this.lastPointerTime) / 1000);
@@ -582,20 +668,12 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (!points || points.length === 0) return;
 
     const last = points[points.length - 1];
-    const ndcX = (last.x / Math.max(1, this.width)) * 2 - 1;
-    const ndcY = -(last.y / Math.max(1, this.height)) * 2 + 1;
+    const world = this.screenToWorld(last.x, last.y);
 
-    this.camera.updateMatrixWorld();
-    this.tempVec.set(ndcX, ndcY, 0.5).unproject(this.camera);
-    const dir = this.tempVec.sub(this.camera.position).normalize();
-    const dist = Math.abs(dir.z) > 1e-6 ? -this.camera.position.z / dir.z : 0;
-    const wx = this.camera.position.x + dir.x * dist;
-    const wy = this.camera.position.y + dir.y * dist;
-
-    this.impulseCenter.set(wx, wy);
+    this.impulseCenter.set(world.x, world.y);
     this.impulseStrength = 1.0;
 
-    this.material.uniforms.uImpulseCenter.value.set(wx, wy);
+    this.material.uniforms.uImpulseCenter.value.set(world.x, world.y);
     this.material.uniforms.uImpulseStrength.value = 1.0;
   }
 
@@ -624,52 +702,86 @@ export class ThreeParticleEngine implements ParticleEngine {
     return { hw: (hh * this.width) / Math.max(1, this.height), hh };
   }
 
-  public zoomAt(factor: number, nx: number = 0, ny: number = 0): void {
-    const z1 = THREE.MathUtils.clamp(this.zoomTarget * factor, 0.5, 12);
-    const a = this.halfExtents(this.zoomTarget);
+  public zoomAt(factor: number, ndcX: number = 0, ndcY: number = 0): void {
+    const z1 = THREE.MathUtils.clamp(this.view.zoomT * factor, MIN_ZOOM, MAX_ZOOM);
+    const a = this.halfExtents(this.view.zoomT);
     const b = this.halfExtents(z1);
-    this.panTarget.x += nx * (a.hw - b.hw); // keeps the point under the cursor fixed
-    this.panTarget.y += ny * (a.hh - b.hh);
-    this.zoomTarget = z1;
+    this.view.panTX += ndcX * (a.hw - b.hw); // keeps the point under the cursor fixed
+    this.view.panTY += ndcY * (a.hh - b.hh);
+    this.view.zoomT = z1;
     this.clampPan();
   }
 
   public setZoom(zoom: number): void {
-    this.zoomTarget = THREE.MathUtils.clamp(zoom, 0.5, 12);
+    this.view.zoomT = THREE.MathUtils.clamp(zoom, MIN_ZOOM, MAX_ZOOM);
     this.clampPan();
   }
 
+  public orbitByPixels(dx: number, dy: number): void {
+    this.view.yawT = THREE.MathUtils.clamp(this.view.yawT - dx * 0.005, -MAX_YAW, MAX_YAW);
+    this.view.pitchT = THREE.MathUtils.clamp(this.view.pitchT + dy * 0.005, -MAX_PITCH, MAX_PITCH);
+  }
+
   public panByPixels(dx: number, dy: number): void {
-    const e = this.halfExtents(this.zoomTarget);
-    this.panTarget.x -= (dx / Math.max(1, this.width)) * 2 * e.hw;
-    this.panTarget.y += (dy / Math.max(1, this.height)) * 2 * e.hh; // screen dy is down, y is up
+    const e = this.halfExtents(this.view.zoomT);
+    this.view.panTX -= (dx / Math.max(1, this.width)) * 2 * e.hw;
+    this.view.panTY += (dy / Math.max(1, this.height)) * 2 * e.hh; // screen dy is down, y is up
     this.clampPan();
   }
 
   public clampPan(): void {
-    const e = this.halfExtents(this.zoomTarget);
-    const limX = Math.max(0, this.imageAspect / 2 - 0.9 * e.hw);
-    const limY = Math.max(0, 0.5 - 0.9 * e.hh);
-    this.panTarget.x = THREE.MathUtils.clamp(this.panTarget.x, -limX, limX);
-    this.panTarget.y = THREE.MathUtils.clamp(this.panTarget.y, -limY, limY);
+    const maxBoundX = Math.max(2.5, this.imageAspect * 2.5);
+    const maxBoundY = 2.5;
+    this.view.panTX = THREE.MathUtils.clamp(this.view.panTX, -maxBoundX, maxBoundX);
+    this.view.panTY = THREE.MathUtils.clamp(this.view.panTY, -maxBoundY, maxBoundY);
   }
 
   public resetView(): void {
-    this.zoomTarget = 1.0;
-    this.panTarget.set(0, 0);
+    this.view.zoomT = 1.0;
+    this.view.panTX = 0;
+    this.view.panTY = 0;
+    this.view.yawT = 0;
+    this.view.pitchT = 0;
   }
 
-  public getView(): { zoom: number; panX: number; panY: number } {
+  public getView(): { zoom: number; panX: number; panY: number; yaw: number; pitch: number } {
     return {
-      zoom: this.zoom,
-      panX: this.pan.x,
-      panY: this.pan.y,
+      zoom: this.view.zoom,
+      panX: this.view.panX,
+      panY: this.view.panY,
+      yaw: this.view.yaw,
+      pitch: this.view.pitch,
     };
   }
 
   public setDebug(debug: boolean): void {
     this.settings.debug = debug;
     this.material.uniforms.uDebug.value = debug ? 1 : 0;
+  }
+
+  private updateCamera(dt: number, _tSec: number, dolly: number): void {
+    const v = this.view;
+    const k = 1 - Math.exp(-dt * 12); // ease zoom, pan, yaw, pitch to targets
+    v.zoom += (v.zoomT - v.zoom) * k;
+    v.panX += (v.panTX - v.panX) * k;
+    v.panY += (v.panTY - v.panY) * k;
+    v.yaw += (v.yawT - v.yaw) * k;
+    v.pitch += (v.pitchT - v.pitch) * k;
+    const px = this.pointerState.x / Math.max(1, this.width) - 0.5;
+    const py = this.pointerState.y / Math.max(1, this.height) - 0.5;
+    const yaw = v.yaw + px * 0.10 + this.orientation.y * 0.15; // light parallax
+    const pitch = v.pitch - py * 0.07 - this.orientation.x * 0.15;
+    const r = this.baseCamZ - dolly; // Travel dolly
+    this.camera.position.set(
+      v.panX + r * Math.sin(yaw) * Math.cos(pitch),
+      v.panY + r * Math.sin(pitch),
+      r * Math.cos(yaw) * Math.cos(pitch)
+    );
+    this.camera.up.set(0, 1, 0);
+    this.camera.lookAt(v.panX, v.panY, 0);
+    this.camera.zoom = v.zoom;
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
   }
 
   public render(_t?: number): EngineRenderState {
@@ -717,6 +829,16 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     // Uniform updates
     this.material.uniforms.uTime.value = tSec;
+
+    // Drift parameters
+    const a = THREE.MathUtils.degToRad(this.drift.angleDeg);
+    const axis = this.tempDriftAxis.set(Math.cos(a), Math.sin(a));
+    const half = 0.5 * (Math.abs(axis.x) * this.imageAspect + Math.abs(axis.y));
+    this.posSmooth += (this.drift.pos - this.posSmooth) * (1 - Math.exp(-dt * 10));
+    const origin = -half + 2 * half * this.posSmooth;
+    this.material.uniforms.uDriftOrigin.value = origin;
+    this.material.uniforms.uDriftAxis.value.copy(axis);
+    this.material.uniforms.uDriftFeather.value = this.drift.feather;
 
     // Mode transition animation
     if (this.material.uniforms.uModeTransition.value < 1.0) {
@@ -766,35 +888,14 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.material.uniforms.uImpulseStrength.value = 0.0;
     }
 
-    // Easing for zoom & pan
-    const k = 1 - Math.exp(-dt * 12);
-    this.zoom += (this.zoomTarget - this.zoom) * k;
-    this.pan.lerp(this.panTarget, k);
-
-    this.camera.zoom = this.zoom;
-    this.camera.updateProjectionMatrix();
-    this.material.uniforms.uZoom.value = this.zoom;
-    this.material.uniforms.uIntensity.value = this.settings.intensity;
-
-    // Camera parallax with frame-rate independent easing
-    const targetCamX =
-      ((this.pointerState.x / Math.max(1, this.width) - 0.5) * 0.15 + this.orientation.y * 0.2);
-    const targetCamY =
-      (-(this.pointerState.y / Math.max(1, this.height) - 0.5) * 0.15 - this.orientation.x * 0.2);
-
-    const kParallax = 1 - Math.exp(-dt * 3);
-    this.smoothParallax.x += (targetCamX - this.smoothParallax.x) * kParallax;
-    this.smoothParallax.y += (targetCamY - this.smoothParallax.y) * kParallax;
-
-    this.camera.position.x = this.pan.x + this.smoothParallax.x / this.zoom;
-    this.camera.position.y = this.pan.y + this.smoothParallax.y / this.zoom;
-
     // Travel camera dolly motion
     const target = this.settings.mode === 'TRAVEL' ? 1 : 0;
     this.travelBlend += (target - this.travelBlend) * (1 - Math.exp(-dt * 2.0));
     const dolly = 0.5 * (1 - Math.cos(tSec * 0.3)) * 1.5 * this.travelBlend;
-    this.camera.position.z = this.baseCamZ - dolly;
-    this.camera.lookAt(this.pan.x, this.pan.y, 0);
+
+    this.updateCamera(dt, tSec, dolly);
+    this.material.uniforms.uZoom.value = this.view.zoom;
+    this.material.uniforms.uIntensity.value = this.settings.intensity;
 
     // Render WebGL
     this.renderer.render(this.scene, this.camera);
@@ -824,6 +925,9 @@ export class ThreeParticleEngine implements ParticleEngine {
       orientation: [this.orientation.x, this.orientation.y],
       impulseCenter: [this.impulseCenter.x, this.impulseCenter.y],
       impulseStrength: this.impulseStrength,
+      driftAxis: [axis.x, axis.y],
+      driftOrigin: origin,
+      driftFeather: this.drift.feather,
     };
 
     // Transform salient tracker points with mode displacement to normalized [0..1] canvas coordinates
@@ -886,6 +990,59 @@ export class ThreeParticleEngine implements ParticleEngine {
       }
     }
 
+    // Drift bar projection in DRIFT mode (canvas CSS pixels)
+    let driftBar: DriftBar | undefined = undefined;
+    if (this.settings.mode === 'DRIFT') {
+      // centre c = axis * origin (world)
+      const cx = axis.x * origin;
+      const cy = axis.y * origin;
+      // perpendicular n = (-axis.y, axis.x)
+      const nx = -axis.y;
+      const ny = axis.x;
+      const perpHalf = 0.5 * (Math.abs(axis.y) * this.imageAspect + Math.abs(axis.x)) + 0.06;
+      const worldAx = cx + nx * perpHalf;
+      const worldAy = cy + ny * perpHalf;
+      const worldBx = cx - nx * perpHalf;
+      const worldBy = cy - ny * perpHalf;
+
+      // Project world points through camera (z = 0)
+      this.tempVec.set(worldAx, worldAy, 0).project(this.camera);
+      const scrAx = (this.tempVec.x + 1.0) * 0.5 * this.width;
+      const scrAy = (1.0 - this.tempVec.y) * 0.5 * this.height;
+
+      this.tempVec.set(worldBx, worldBy, 0).project(this.camera);
+      const scrBx = (this.tempVec.x + 1.0) * 0.5 * this.width;
+      const scrBy = (1.0 - this.tempVec.y) * 0.5 * this.height;
+
+      this.tempVec.set(cx, cy, 0).project(this.camera);
+      const handleX = (this.tempVec.x + 1.0) * 0.5 * this.width;
+      const handleY = (1.0 - this.tempVec.y) * 0.5 * this.height;
+
+      this.tempVec.set(cx + axis.x * 0.1, cy + axis.y * 0.1, 0).project(this.camera);
+      const tgtX = (this.tempVec.x + 1.0) * 0.5 * this.width;
+      const tgtY = (1.0 - this.tempVec.y) * 0.5 * this.height;
+
+      const dDirX = tgtX - handleX;
+      const dDirY = tgtY - handleY;
+      const lenDir = Math.hypot(dDirX, dDirY);
+      const dir = lenDir > 1e-6 ? { x: dDirX / lenDir, y: dDirY / lenDir } : { x: 1, y: 0 };
+
+      const isHovered =
+        this.distToSegment(this.pointerState.x, this.pointerState.y, scrAx, scrAy, scrBx, scrBy) <= 14;
+
+      driftBar = {
+        a: { x: scrAx, y: scrAy },
+        b: { x: scrBx, y: scrBy },
+        handle: { x: handleX, y: handleY },
+        dir,
+        hovered: isHovered,
+        dragging: this.isDriftDragging,
+      };
+      this.currentDriftBar = driftBar;
+    } else {
+      this.currentDriftBar = null;
+    }
+
     this.latestRenderState = {
       time: tSec,
       deltaTime: dt,
@@ -896,10 +1053,16 @@ export class ThreeParticleEngine implements ParticleEngine {
       particleCount: effectiveParticleCount,
       activeMode: this.settings.mode,
       colorMode: this.settings.colorMode,
+      overlays: {
+        ...this.settings.overlays,
+        active: { ...this.settings.overlays.active },
+      },
       pointer: { ...this.pointerState },
-      zoom: this.zoom,
-      panX: this.pan.x,
-      panY: this.pan.y,
+      zoom: this.view.zoom,
+      panX: this.view.panX,
+      panY: this.view.panY,
+      yaw: this.view.yaw,
+      pitch: this.view.pitch,
       viewMatrix: new Float32Array(this.camera.matrixWorldInverse.elements),
       projectionMatrix: new Float32Array(this.camera.projectionMatrix.elements),
       viewProjectionMatrix: viewProjElements,
@@ -918,6 +1081,8 @@ export class ThreeParticleEngine implements ParticleEngine {
       impulseStrength: this.impulseStrength,
       prevMode: this.prevMode,
       modeTransition: this.material.uniforms.uModeTransition.value,
+      drift: { pos: this.drift.pos, angleDeg: this.drift.angleDeg, feather: this.drift.feather },
+      driftBar,
     };
 
     return this.latestRenderState;
