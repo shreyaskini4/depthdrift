@@ -88,12 +88,14 @@ export class DrawManager {
     if (pts.length === 0) return;
 
     const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
+    const isOnWhite = renderState.colorMode === 'ON_WHITE';
+    const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
 
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    // If only a single point exists, draw a glowing bead
+    // If only a single point exists, draw a precision bead
     if (pts.length === 1) {
       const p = pts[0];
       const px = p.x * width;
@@ -102,12 +104,12 @@ export class DrawManager {
       const life = Math.max(0, 1.0 - age / DRAW_POINT_LIFETIME);
       const alpha = life * life;
 
-      ctx.fillStyle = `rgba(100, 210, 255, ${(alpha * 0.4).toFixed(2)})`;
+      ctx.fillStyle = `rgba(${inkBase}, ${(alpha * 0.32).toFixed(2)})`;
       ctx.beginPath();
       ctx.arc(px, py, 6 * lineWeight, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = `rgba(255, 255, 255, ${(alpha * 0.9).toFixed(2)})`;
+      ctx.fillStyle = `rgba(${inkBase}, ${(alpha * 0.90).toFixed(2)})`;
       ctx.beginPath();
       ctx.arc(px, py, 2.5 * lineWeight, 0, Math.PI * 2);
       ctx.fill();
@@ -115,8 +117,8 @@ export class DrawManager {
       return;
     }
 
-    // 3. Multi-segment tapered ribbon rendering with two passes (glow + core)
-    // Pass A: Outer Cyan Glow
+    // 3. Multi-segment tapered ribbon rendering with two passes (outer + core)
+    // Pass A: Soft outer ink
     for (let i = 0; i < pts.length - 1; i++) {
       const p1 = pts[i];
       const p2 = pts[i + 1];
@@ -127,7 +129,7 @@ export class DrawManager {
 
       const segWidth = (1.5 + 4.5 * life) * lineWeight;
       ctx.lineWidth = segWidth;
-      ctx.strokeStyle = `rgba(100, 210, 255, ${(alpha * 0.35).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(${inkBase}, ${(alpha * 0.28).toFixed(2)})`;
 
       ctx.beginPath();
       ctx.moveTo(p1.x * width, p1.y * height);
@@ -146,7 +148,7 @@ export class DrawManager {
 
       const segWidth = (0.75 + 2.0 * life) * lineWeight;
       ctx.lineWidth = segWidth;
-      ctx.strokeStyle = `rgba(240, 250, 255, ${(alpha * 0.9).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(${inkBase}, ${(alpha * 0.88).toFixed(2)})`;
 
       ctx.beginPath();
       ctx.moveTo(p1.x * width, p1.y * height);
@@ -162,7 +164,7 @@ export class DrawManager {
         const angle = Math.atan2(y2 - y1, x2 - x1);
         const arrowLen = 5 * lineWeight;
 
-        ctx.strokeStyle = `rgba(255, 214, 10, ${(alpha * 0.75).toFixed(2)})`;
+        ctx.strokeStyle = `rgba(${inkBase}, ${(alpha * 0.65).toFixed(2)})`;
         ctx.lineWidth = Math.max(0.7, lineWeight * 0.8);
         ctx.beginPath();
         ctx.moveTo(
@@ -178,7 +180,7 @@ export class DrawManager {
       }
     }
 
-    // 4. Glowing Leading Tip Indicator
+    // 4. Leading Tip Indicator
     const tip = pts[pts.length - 1];
     const tipAge = currentTime - tip.time;
     if (tipAge < 0.6) {
@@ -186,15 +188,15 @@ export class DrawManager {
       const tipY = tip.y * height;
       const tipPulse = 1.0 + 0.3 * Math.sin(currentTime * 12);
 
-      // Amber reticle ring
-      ctx.strokeStyle = 'rgba(255, 214, 10, 0.85)';
+      // Precision reticle ring
+      ctx.strokeStyle = `rgba(${inkBase}, 0.80)`;
       ctx.lineWidth = Math.max(0.75, lineWeight * 0.9);
       ctx.beginPath();
       ctx.arc(tipX, tipY, 5 * tipPulse * lineWeight, 0, Math.PI * 2);
       ctx.stroke();
 
-      // White center spark
-      ctx.fillStyle = '#ffffff';
+      // Center spark
+      ctx.fillStyle = isOnWhite ? '#141416' : '#ECE8E1';
       ctx.beginPath();
       ctx.arc(tipX, tipY, 1.8 * lineWeight, 0, Math.PI * 2);
       ctx.fill();

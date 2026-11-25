@@ -21,6 +21,8 @@ export function renderScan(
   const { trackers, width, height, time } = renderState;
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
   const scanSpeed = Math.max(0.1, settings.scanSpeed || 1.0);
+  const isOnWhite = renderState.colorMode === 'ON_WHITE';
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
 
   // Normalized sweeping position: 0 -> 1 loop
   const progress = ((time * scanSpeed * 0.12) % 1.0 + 1.0) % 1.0;
@@ -36,17 +38,17 @@ export function renderScan(
   if (tailHeight > 2) {
     const tailTop = scanY - tailHeight;
     const gradient = ctx.createLinearGradient(0, tailTop, 0, scanY);
-    gradient.addColorStop(0.0, 'rgba(100, 210, 255, 0.0)');
-    gradient.addColorStop(0.7, 'rgba(100, 210, 255, 0.04)');
-    gradient.addColorStop(1.0, 'rgba(100, 210, 255, 0.18)');
+    gradient.addColorStop(0.0, `rgba(${inkBase}, 0.0)`);
+    gradient.addColorStop(0.7, `rgba(${inkBase}, 0.04)`);
+    gradient.addColorStop(1.0, `rgba(${inkBase}, 0.14)`);
 
     ctx.fillStyle = gradient;
     if (tailTop < 0) {
       // Wrapped tail at top of screen
       ctx.fillRect(0, 0, width, scanY);
       const wrapGrad = ctx.createLinearGradient(0, height + tailTop, 0, height);
-      wrapGrad.addColorStop(0.0, 'rgba(100, 210, 255, 0.0)');
-      wrapGrad.addColorStop(1.0, 'rgba(100, 210, 255, 0.12)');
+      wrapGrad.addColorStop(0.0, `rgba(${inkBase}, 0.0)`);
+      wrapGrad.addColorStop(1.0, `rgba(${inkBase}, 0.10)`);
       ctx.fillStyle = wrapGrad;
       ctx.fillRect(0, height + tailTop, width, -tailTop);
     } else {
@@ -54,9 +56,9 @@ export function renderScan(
     }
   }
 
-  // 2. Multi-Pass Laser-Fine Sweep Line
-  // Outer soft glow line
-  ctx.strokeStyle = 'rgba(100, 210, 255, 0.35)';
+  // 2. Multi-Pass Fine Sweep Line
+  // Outer soft line
+  ctx.strokeStyle = `rgba(${inkBase}, 0.28)`;
   ctx.lineWidth = Math.max(1.8, lineWeight * 2.4);
   ctx.beginPath();
   ctx.moveTo(0, scanY);
@@ -64,7 +66,7 @@ export function renderScan(
   ctx.stroke();
 
   // Razor core line
-  ctx.strokeStyle = 'rgba(215, 245, 255, 0.95)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.90)`;
   ctx.lineWidth = Math.max(0.75, lineWeight * 0.9);
   ctx.beginPath();
   ctx.moveTo(0, scanY);
@@ -72,7 +74,7 @@ export function renderScan(
   ctx.stroke();
 
   // 3. Ruler Ticks Along Scan Line
-  ctx.strokeStyle = 'rgba(100, 210, 255, 0.6)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.50)`;
   ctx.lineWidth = Math.max(0.5, lineWeight * 0.7);
   const tickSpacing = 40;
   ctx.beginPath();
@@ -85,8 +87,9 @@ export function renderScan(
   ctx.stroke();
 
   // 4. Telemetry Readouts
-  ctx.font = `${Math.round(8.5 * Math.min(1.2, Math.max(0.85, lineWeight * 0.85)))}px "SF Mono", Menlo, Consolas, monospace`;
-  ctx.fillStyle = 'rgba(100, 210, 255, 0.85)';
+  const fontSize = Math.max(10, Math.round(10 * Math.min(1.2, Math.max(0.85, lineWeight * 0.9))));
+  ctx.font = `${fontSize}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
+  ctx.fillStyle = `rgba(${inkBase}, 0.80)`;
   ctx.textBaseline = 'bottom';
 
   const leftTag = `SCAN // BEAM ${(progress * 100).toFixed(1)}%`;
@@ -113,8 +116,8 @@ export function renderScan(
         const pingAlpha = isBeamHit ? 1.0 - distY / 18 : 1.0 - distZ / 0.04;
         const radius = 6 + (1.0 - pingAlpha) * 8;
 
-        // Amber/gold accent ping
-        ctx.strokeStyle = `rgba(255, 214, 10, ${(pingAlpha * 0.85).toFixed(2)})`;
+        // Precision --ink reticle ping
+        ctx.strokeStyle = `rgba(${inkBase}, ${(pingAlpha * 0.80).toFixed(2)})`;
         ctx.lineWidth = Math.max(0.75, lineWeight * 0.8);
         ctx.beginPath();
         ctx.arc(px, py, radius, 0, Math.PI * 2);
@@ -122,7 +125,7 @@ export function renderScan(
 
         // Fine spark line connecting tracker point to scan beam
         if (isBeamHit) {
-          ctx.strokeStyle = `rgba(255, 214, 10, ${(pingAlpha * 0.45).toFixed(2)})`;
+          ctx.strokeStyle = `rgba(${inkBase}, ${(pingAlpha * 0.40).toFixed(2)})`;
           ctx.beginPath();
           ctx.moveTo(px, py);
           ctx.lineTo(px, scanY);

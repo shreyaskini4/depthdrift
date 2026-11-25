@@ -70,13 +70,15 @@ export class ThreeParticleEngine implements ParticleEngine {
 
   // Trackers and interactive state
   private baseTrackers: BaseTracker[] = [];
+  private hasPointerMoved: boolean = false;
   private pointerState = {
-    x: 0,
-    y: 0,
+    x: 400,
+    y: 300,
     isDown: false,
     vx: 0,
     vy: 0,
   };
+  private lastContentCenter = { x: 0, y: 0 };
   private pointerWorld = new THREE.Vector2(0, 0);
   private lastPointerWorld = new THREE.Vector2(0, 0);
   private lastPointerTime: number = 0;
@@ -174,6 +176,7 @@ export class ThreeParticleEngine implements ParticleEngine {
       },
       adaptiveFPS: initialSettings?.adaptiveFPS ?? true,
       debug: isDebug,
+      centerOnContent: initialSettings?.centerOnContent ?? true,
     };
 
     this.fpsRegulator = new FPSRegulator(this.settings.particleCount, this.settings.adaptiveFPS);
@@ -181,6 +184,8 @@ export class ThreeParticleEngine implements ParticleEngine {
     // Initial width & height
     this.width = this.canvas.clientWidth || 800;
     this.height = this.canvas.clientHeight || 600;
+    this.pointerState.x = this.width / 2;
+    this.pointerState.y = this.height / 2;
     this.dpr = this.effectivePixelRatio();
 
     // Three.js renderer
@@ -403,6 +408,10 @@ export class ThreeParticleEngine implements ParticleEngine {
       this.clampPan();
     }
 
+    if (data.contentCenter) {
+      this.lastContentCenter = { ...data.contentCenter };
+    }
+
     this.baseTrackers = data.trackers;
     if (this.baseTrackers.length > 0) {
       let minZ = Infinity;
@@ -434,9 +443,42 @@ export class ThreeParticleEngine implements ParticleEngine {
     const targetCount = MAX_PARTICLE_CAPACITY;
     const sampled = sampleImageAndDepth(pixels, depth, targetCount);
     this.imageAspect = sampled.aspect || (pixels.width / Math.max(1, pixels.height)) || 1.0;
+    this.lastContentCenter = sampled.contentCenter || { x: 0, y: 0 };
+
+    // Reset pan, yaw, pitch, and zoom on every setImage
+    this.view.yaw = 0;
+    this.view.yawT = 0;
+    this.view.pitch = 0;
+    this.view.pitchT = 0;
+    this.view.zoom = 1.0;
+    this.view.zoomT = 1.0;
+
+    this.applyCenterOnContent(true);
     this.fitCamera();
     this.clampPan();
     this.applySampledData(sampled, true);
+  }
+
+  private applyCenterOnContent(immediate: boolean = false): void {
+    if (this.settings.centerOnContent) {
+      const limX = 0.25 * this.imageAspect;
+      const limY = 0.2;
+      const targetX = THREE.MathUtils.clamp(this.lastContentCenter.x, -limX, limX);
+      const targetY = THREE.MathUtils.clamp(this.lastContentCenter.y, -limY, limY);
+      this.view.panTX = targetX;
+      this.view.panTY = targetY;
+      if (immediate) {
+        this.view.panX = targetX;
+        this.view.panY = targetY;
+      }
+    } else {
+      this.view.panTX = 0;
+      this.view.panTY = 0;
+      if (immediate) {
+        this.view.panX = 0;
+        this.view.panY = 0;
+      }
+    }
   }
 
   public setSettings(settings: Partial<ParticleSettings>): void {
@@ -511,6 +553,14 @@ export class ThreeParticleEngine implements ParticleEngine {
     if (settings.debug !== undefined) {
       this.settings.debug = settings.debug;
       this.material.uniforms.uDebug.value = settings.debug ? 1 : 0;
+    }
+
+    if (settings.centerOnContent !== undefined) {
+      const changed = this.settings.centerOnContent !== settings.centerOnContent;
+      this.settings.centerOnContent = settings.centerOnContent;
+      if (changed) {
+        this.applyCenterOnContent(false);
+      }
     }
 
     if (settings.overlays !== undefined) {
@@ -666,6 +716,7 @@ export class ThreeParticleEngine implements ParticleEngine {
   }
 
   public setPointer(x: number, y: number, isDown: boolean): void {
+    this.hasPointerMoved = true;
     this.pointerState.x = x;
     this.pointerState.y = y;
     this.pointerState.isDown = isDown;
@@ -715,6 +766,10 @@ export class ThreeParticleEngine implements ParticleEngine {
 
     this.width = width;
     this.height = height;
+    if (!this.hasPointerMoved) {
+      this.pointerState.x = width / 2;
+      this.pointerState.y = height / 2;
+    }
     const targetDpr = this.effectivePixelRatio();
     this.dpr = targetDpr;
 
@@ -777,10 +832,9 @@ export class ThreeParticleEngine implements ParticleEngine {
 
   public resetView(): void {
     this.view.zoomT = 1.0;
-    this.view.panTX = 0;
-    this.view.panTY = 0;
     this.view.yawT = 0;
     this.view.pitchT = 0;
+    this.applyCenterOnContent(false);
   }
 
   public getView(): { zoom: number; panX: number; panY: number; yaw: number; pitch: number } {
@@ -790,6 +844,52 @@ export class ThreeParticleEngine implements ParticleEngine {
       panY: this.view.panY,
       yaw: this.view.yaw,
       pitch: this.view.pitch,
+    };
+  }
+
+  public measureImageCenter(): { cx: number; cy: number; offsetPx: [number, number] } {
+    const hw = this.imageAspect / 2, hh = 0.5;
+    this.camera.updateMatrixWorld();
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [x, y] of [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]) {
+      this.tempVec.set(x, y, 0).project(this.camera);
+      minX = Math.min(minX, this.tempVec.x); maxX = Math.max(maxX, this.tempVec.x);
+      minY = Math.min(minY, this.tempVec.y); maxY = Math.max(maxY, this.tempVec.y);
+    }
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2; // 0,0 = centred
+    return { cx, cy, offsetPx: [(cx * this.width) / 2, (-cy * this.height) / 2] };
+  }
+
+  public getCenteringDiagnostics() {
+    const rect =
+      typeof this.canvas.getBoundingClientRect === 'function'
+        ? this.canvas.getBoundingClientRect()
+        : { left: 0, top: 0, width: this.width, height: this.height, right: this.width, bottom: this.height };
+    const winW = typeof window !== 'undefined' ? window.innerWidth : this.width;
+    const winH = typeof window !== 'undefined' ? window.innerHeight : this.height;
+    const canvasCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const winCenter = { x: winW / 2, y: winH / 2 };
+    const imageCenter = this.measureImageCenter();
+    return {
+      imageCenter,
+      canvasRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+      canvasCenter,
+      windowCenter: winCenter,
+      canvasVsWindowCenterOffset: { dx: canvasCenter.x - winCenter.x, dy: canvasCenter.y - winCenter.y },
+      engineSize: { width: this.width, height: this.height },
+      rendererDomElementDividedByDpr: {
+        width: this.renderer.domElement.width / this.dpr,
+        height: this.renderer.domElement.height / this.dpr,
+      },
+      cameraPosition: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+      lookAtTarget: [this.view.panX, this.view.panY, 0],
+      pan: { panX: this.view.panX, panY: this.view.panY, panTX: this.view.panTX, panTY: this.view.panTY },
+      yaw: this.view.yaw,
+      pitch: this.view.pitch,
+      pointerState: { ...this.pointerState },
+      hasPointerMoved: this.hasPointerMoved,
+      centerOnContent: this.settings.centerOnContent,
+      contentCenter: { ...this.lastContentCenter },
     };
   }
 
@@ -840,7 +940,10 @@ export class ThreeParticleEngine implements ParticleEngine {
     }
 
     // 3. Attractor smoothing
-    const recent = this.lastPointerTime > 0 && (performance.now() - this.lastPointerTime < 2500);
+    const recent =
+      this.hasPointerMoved &&
+      this.lastPointerTime > 0 &&
+      performance.now() - this.lastPointerTime < 2500;
     let tx: number, ty: number, amt: number;
     if (this.pointerState.isDown || recent) {
       tx = this.pointerWorld.x;
@@ -1118,6 +1221,8 @@ export class ThreeParticleEngine implements ParticleEngine {
       modeTransition: this.material.uniforms.uModeTransition.value,
       drift: { pos: this.drift.pos, angleDeg: this.drift.angleDeg, feather: this.drift.feather },
       driftBar,
+      debug: !!this.settings.debug,
+      contentCenter: { ...this.lastContentCenter },
     };
 
     return this.latestRenderState;

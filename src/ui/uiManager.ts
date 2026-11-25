@@ -61,6 +61,10 @@ export class UIManager {
   private isChromeHidden: boolean = false;
   private readonly autoHideDelayMs: number = 3000;
   private activityListeners: Array<() => void> = [];
+  private toastEl: HTMLElement;
+  private toastTimer: number | null = null;
+  private isRecordingActive: boolean = false;
+  private isSavingRecording: boolean = false;
 
   constructor(initialState: AppState, callbacks: UIManagerCallbacks) {
     this.state = initialState;
@@ -116,7 +120,10 @@ export class UIManager {
       onColorModeSelect: (colorMode) => this.callbacks.onColorModeChange(colorMode),
       onOpenSettings: () => this.openSettings(),
       onOpenCredits: () => this.openCredits(),
-      onExport: () => this.callbacks.onExport(),
+      onExport: () => {
+        this.callbacks.onExport();
+        this.showToast('Snapshot saved');
+      },
       onToggleRecordVideo: () => this.callbacks.onToggleRecordVideo(),
       onToggleHandTool: () => this.callbacks.onToggleHandTool?.(),
       onZoomIn: () => this.callbacks.onZoomIn?.(),
@@ -170,6 +177,13 @@ export class UIManager {
     // 8. Live Real-Time Telemetry Badge
     this.telemetryBadge = new TelemetryBadge(uiLayer);
     this.telemetryBadge.setDebug(!!this.state.settings.debug);
+
+    // 9. Quiet Confirmation Toast
+    this.toastEl = document.createElement('div');
+    this.toastEl.className = 'ui-toast';
+    this.toastEl.setAttribute('role', 'status');
+    this.toastEl.setAttribute('aria-live', 'polite');
+    uiLayer.appendChild(this.toastEl);
 
     // Initial state reflection
     this.update(initialState);
@@ -308,7 +322,32 @@ export class UIManager {
   }
 
   public setRecordingState(isRecording: boolean, timeStr?: string): void {
+    if (isRecording) {
+      this.isRecordingActive = true;
+      if (timeStr === 'SAVING') {
+        this.isSavingRecording = true;
+      }
+    } else {
+      if (this.isRecordingActive && this.isSavingRecording) {
+        this.showToast('Recording saved');
+      }
+      this.isRecordingActive = false;
+      this.isSavingRecording = false;
+    }
     this.floatingControls.setRecordingState(isRecording, timeStr);
+  }
+
+  public showToast(message: string, durationMs: number = 2200): void {
+    if (this.toastTimer !== null) {
+      window.clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    this.toastEl.textContent = message;
+    this.toastEl.classList.add('visible');
+    this.toastTimer = window.setTimeout(() => {
+      this.toastEl.classList.remove('visible');
+      this.toastTimer = null;
+    }, durationMs);
   }
 
   public openDepthDebug(depthResult?: DepthResult, fileName?: string): void {
@@ -432,6 +471,10 @@ export class UIManager {
   }
 
   public showLoading(stage: string, progress: number, message?: string): void {
+    // Do not obscure the TitleScreen during background startup model warm-up
+    if (this.state.images.length === 0 && this.titleScreen.isOpen()) {
+      return;
+    }
     this.loadingOverlay.showProgress(stage, progress, message);
   }
 
@@ -489,11 +532,15 @@ export class UIManager {
     }
 
     if (this.state.isLoading) {
-      this.showLoading(
-        'inferring',
-        this.state.loadingProgress,
-        this.state.loadingMessage
-      );
+      if (hasImages || !this.titleScreen.isOpen()) {
+        this.showLoading(
+          'inferring',
+          this.state.loadingProgress,
+          this.state.loadingMessage
+        );
+      } else {
+        this.hideLoading();
+      }
     } else if (this.state.error) {
       this.showError(this.state.error);
     } else {

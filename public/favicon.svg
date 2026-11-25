@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="6" fill="#050506" />
+  <g fill="#ECE8E1">
+    <!-- Left vertical stem of dotted D -->
+    <circle cx="9" cy="7" r="1.5" />
+    <circle cx="9" cy="11.5" r="1.5" />
+    <circle cx="9" cy="16" r="1.5" />
+    <circle cx="9" cy="20.5" r="1.5" />
+    <circle cx="9" cy="25" r="1.5" />
+    <!-- Top & bottom bars -->
+    <circle cx="13.5" cy="7" r="1.5" />
+    <circle cx="18" cy="7.5" r="1.45" />
+    <circle cx="13.5" cy="25" r="1.5" />
+    <circle cx="18" cy="24.5" r="1.45" />
+    <!-- Curved right arc -->
+    <circle cx="21.5" cy="10.2" r="1.45" />
+    <circle cx="23" cy="13.8" r="1.45" />
+    <circle cx="23" cy="18.2" r="1.45" />
+    <circle cx="21.5" cy="21.8" r="1.45" />
+  </g>
+</svg>

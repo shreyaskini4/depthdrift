@@ -19,7 +19,6 @@ export class LoadingOverlay {
   private errorMessage: string = '';
   private stage: string = '';
   private progress: number = 0;
-  private detailText: string = '';
 
   constructor(parent: HTMLElement, options: LoadingOverlayOptions) {
     this.options = options;
@@ -31,12 +30,13 @@ export class LoadingOverlay {
     parent.appendChild(this.container);
   }
 
-  public showProgress(stage: string, progress: number, detailText?: string): void {
+  public showProgress(stage: string, progress: number, _detailText?: string): void {
     this.isVisible = true;
     this.isError = false;
     this.stage = stage;
     this.progress = Math.min(100, Math.max(0, progress));
-    this.detailText = detailText || '';
+    this.container.setAttribute('role', 'status');
+    this.container.setAttribute('aria-live', 'polite');
     this.container.classList.remove('hidden');
     this.render();
   }
@@ -45,6 +45,8 @@ export class LoadingOverlay {
     this.isVisible = true;
     this.isError = true;
     this.errorMessage = message;
+    this.container.setAttribute('role', 'alert');
+    this.container.setAttribute('aria-live', 'assertive');
     this.container.classList.remove('hidden');
     this.render();
   }
@@ -55,6 +57,26 @@ export class LoadingOverlay {
     this.container.classList.add('hidden');
   }
 
+  private formatErrorMessage(raw: string): string {
+    if (!raw) {
+      return 'The on-device depth model could not be loaded right now.';
+    }
+    const lower = raw.toLowerCase();
+    if (
+      lower.includes('onnx') ||
+      lower.includes('wasm') ||
+      lower.includes('webgpu') ||
+      lower.includes('fetch') ||
+      lower.includes('network') ||
+      lower.includes('typeerror') ||
+      raw.includes('\n') ||
+      raw.length > 140
+    ) {
+      return 'The on-device depth model could not be loaded right now.';
+    }
+    return raw;
+  }
+
   public render(): void {
     if (!this.isVisible) {
       this.container.innerHTML = '';
@@ -62,24 +84,20 @@ export class LoadingOverlay {
     }
 
     if (this.isError) {
+      const description = this.formatErrorMessage(this.errorMessage);
       this.container.innerHTML = `
         <div class="loading-card error-card glassmorphic-panel">
-          <div class="error-badge">ATTENTION</div>
-          <h3 class="loading-title">Depth Model Loading Issue</h3>
-          <p class="error-description">
-            ${this.errorMessage || 'Failed to initialize the client-side ONNX depth estimation model.'}
-          </p>
+          <h3 class="loading-title">Depth model unavailable</h3>
+          <p class="error-description">${description}</p>
           <div class="error-action-row">
-            <button class="btn btn-primary btn-retry" id="btn-err-retry">
+            <button type="button" class="btn btn-primary btn-retry" id="btn-err-retry">
               ${ICONS.refresh}
-              <span>Retry Download</span>
+              <span>Retry</span>
             </button>
-            <button class="btn btn-secondary btn-fallback" id="btn-err-fallback">
-              ${ICONS.sparkles}
-              <span>Use Instant Procedural Depth</span>
+            <button type="button" class="btn btn-secondary btn-fallback" id="btn-err-fallback">
+              <span>Continue with approximate depth</span>
             </button>
           </div>
-          <span class="error-subtext">Procedural depth runs instantly in offline mode using image luminance & geometry heuristics.</span>
         </div>
       `;
 
@@ -95,31 +113,26 @@ export class LoadingOverlay {
 
     // Normal Loading state
     const pct = Math.round(this.progress);
-    const stageDisplay = this.stage === 'downloading'
-      ? 'Downloading Depth Anything V2 Small (q8)...'
-      : this.stage === 'compiling'
-      ? 'Compiling WebGPU / WASM execution graph...'
-      : this.stage === 'inferring'
-      ? 'Estimating depth geometry...'
-      : 'Preparing model...';
+    const stageLabel = this.stage === 'inferring'
+      ? 'Estimating depth'
+      : 'Preparing depth model';
 
     this.container.innerHTML = `
       <div class="loading-card glassmorphic-panel">
-        <div class="loading-spinner-wrap">
-          <div class="hud-spinner"></div>
+        <div class="loading-header-row">
+          <span class="loading-title">${stageLabel},</span>
+          <span class="loading-pct">${pct}%</span>
         </div>
 
-        <div class="loading-text-group">
-          <div class="loading-header-row">
-            <span class="loading-title">${stageDisplay}</span>
-            <span class="loading-pct">${pct}%</span>
-          </div>
-
-          <div class="progress-track">
-            <div class="progress-fill" style="width: ${pct}%;"></div>
-          </div>
-
-          ${this.detailText ? `<p class="loading-detail">${this.detailText}</p>` : ''}
+        <div
+          class="progress-track"
+          role="progressbar"
+          aria-valuenow="${pct}"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-label="${stageLabel}"
+        >
+          <div class="progress-fill" style="width: ${pct}%;"></div>
         </div>
       </div>
     `;

@@ -81,9 +81,12 @@ export function renderLinks(
     }
   }
 
+  const isOnWhite = renderState.colorMode === 'ON_WHITE';
+  const inkBase = options.color ?? (isOnWhite ? '20, 20, 22' : '236, 232, 225');
+
   // Draw Bucket 0 (faint outer links)
   if (bucket0.length > 0) {
-    ctx.strokeStyle = 'rgba(100, 210, 255, 0.22)';
+    ctx.strokeStyle = `rgba(${inkBase}, 0.16)`;
     ctx.beginPath();
     for (let i = 0; i < bucket0.length; i++) {
       const [x1, y1, x2, y2] = bucket0[i];
@@ -95,7 +98,7 @@ export function renderLinks(
 
   // Draw Bucket 1 (medium links)
   if (bucket1.length > 0) {
-    ctx.strokeStyle = 'rgba(100, 210, 255, 0.50)';
+    ctx.strokeStyle = `rgba(${inkBase}, 0.36)`;
     ctx.beginPath();
     for (let i = 0; i < bucket1.length; i++) {
       const [x1, y1, x2, y2] = bucket1[i];
@@ -105,9 +108,9 @@ export function renderLinks(
     ctx.stroke();
   }
 
-  // Draw Bucket 2 (close, high-intensity links with subtle glow)
+  // Draw Bucket 2 (close, high-intensity links)
   if (bucket2.length > 0) {
-    ctx.strokeStyle = 'rgba(160, 230, 255, 0.85)';
+    ctx.strokeStyle = `rgba(${inkBase}, 0.68)`;
     ctx.beginPath();
     for (let i = 0; i < bucket2.length; i++) {
       const [x1, y1, x2, y2] = bucket2[i];
@@ -117,7 +120,7 @@ export function renderLinks(
     ctx.stroke();
 
     // Subtle midpoint nodes on strongest links
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillStyle = `rgba(${inkBase}, 0.75)`;
     for (let i = 0; i < bucket2.length; i++) {
       const [x1, y1, x2, y2] = bucket2[i];
       const mx = (x1 + x2) * 0.5;

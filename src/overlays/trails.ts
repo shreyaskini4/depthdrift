@@ -53,6 +53,8 @@ export class TrailsBuffer {
     if (!ctx || this.width <= 0 || this.height <= 0) return;
 
     const { pointer, trackers } = renderState;
+    const isOnWhite = renderState.colorMode === 'ON_WHITE';
+    const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
     const fadeRate = Math.max(0.02, Math.min(0.5, settings.trailFade ?? 0.15));
 
     // 1. Decay previous contents via destination-out
@@ -69,7 +71,7 @@ export class TrailsBuffer {
     // Tracker motion stamp
     if (trackers && trackers.length > 0) {
       const stampCount = Math.min(30, trackers.length);
-      ctx.fillStyle = 'rgba(100, 210, 255, 0.18)';
+      ctx.fillStyle = `rgba(${inkBase}, 0.18)`;
       for (let i = 0; i < stampCount; i++) {
         const p = trackers[i];
         const px = p.x * this.width;
@@ -91,9 +93,9 @@ export class TrailsBuffer {
 
       if (isMoving && px >= 0 && px <= this.width && py >= 0 && py <= this.height) {
         if (pointer.isDown) {
-          // Intense amber/gold drag streak
-          ctx.strokeStyle = 'rgba(255, 214, 10, 0.4)';
-          ctx.lineWidth = 4;
+          // Precision --ink drag streak
+          ctx.strokeStyle = `rgba(${inkBase}, 0.45)`;
+          ctx.lineWidth = 3;
           ctx.lineCap = 'round';
           if (this.lastPointerX >= 0) {
             ctx.beginPath();
@@ -102,13 +104,13 @@ export class TrailsBuffer {
             ctx.stroke();
           }
 
-          ctx.fillStyle = 'rgba(255, 230, 120, 0.7)';
+          ctx.fillStyle = `rgba(${inkBase}, 0.75)`;
           ctx.beginPath();
           ctx.arc(px, py, 2.5, 0, Math.PI * 2);
           ctx.fill();
         } else {
-          // Cyan hover particle trace
-          ctx.fillStyle = 'rgba(100, 210, 255, 0.35)';
+          // Subtle --ink hover particle trace
+          ctx.fillStyle = `rgba(${inkBase}, 0.32)`;
           ctx.beginPath();
           ctx.arc(px, py, 2, 0, Math.PI * 2);
           ctx.fill();

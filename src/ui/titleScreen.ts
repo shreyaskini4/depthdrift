@@ -25,7 +25,7 @@ export class TitleScreen {
     this.container = document.createElement('div');
     this.container.className = 'title-screen';
     this.container.setAttribute('role', 'region');
-    this.container.setAttribute('aria-label', 'Image Upload and Intro Screen');
+    this.container.setAttribute('aria-label', 'Add images to Drift');
 
     // Hidden file input
     this.fileInput = document.createElement('input');
@@ -111,41 +111,41 @@ export class TitleScreen {
     this.container.innerHTML = `
       <div class="title-screen-inner">
         ${this.hasExistingImages ? `
-          <button class="title-close-btn" aria-label="Close dialog" title="Return to canvas">
+          <button class="title-close-btn" aria-label="Close" title="Return to canvas">
             ${ICONS.close}
           </button>
         ` : ''}
 
         <div class="brand-header">
-          <h1 class="brand-title">Drift</h1>
-          <p class="brand-tagline">Generative Particle Depth Canvas</p>
-          <p class="brand-subtext">Interactive client-side depth estimation and real-time GPU particle simulation.</p>
+          <h1 class="brand-title">
+            <span>Drift</span>
+            <span class="brand-title-zh" lang="zh-Hant">浮流</span>
+          </h1>
         </div>
 
-        <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-label="Drop up to 4 pictures or click to browse">
-          <div class="drop-zone-glow"></div>
+        <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-label="Drop up to four images or browse">
           <div class="drop-zone-content">
             <div class="drop-zone-icon">
               ${ICONS.upload}
             </div>
-            <div class="drop-zone-text-primary">DROP UP TO FOUR PICTURES</div>
-            <div class="drop-zone-text-secondary">PNG, JPEG, WEBP • Max 4 images</div>
+            <div class="drop-zone-text-primary">Drop up to four images</div>
           </div>
         </div>
 
         <div class="title-action-buttons">
           <button class="btn btn-primary" id="btn-add-pictures">
-            <span>ADD PICTURES</span>
+            ${ICONS.plus}
+            <span>Add images</span>
           </button>
-          
+
           <button class="btn btn-secondary" id="btn-try-demo">
             ${ICONS.sparkles}
-            <span>Try with Demo Art</span>
+            <span>Load demo artwork</span>
           </button>
         </div>
 
         <div class="title-footer-hint">
-          <span>Client-side inference • Depth Anything V2 Small • Private & offline</span>
+          <span>Runs locally on your device</span>
         </div>
       </div>
     `;

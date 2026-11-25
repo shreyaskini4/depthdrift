@@ -55,6 +55,7 @@ export function renderTrackers(
   options: TrackersRenderOptions = {}
 ): void {
   const { trackers, width, height, time } = renderState;
+  const isOnWhite = renderState.colorMode === 'ON_WHITE';
   if (!trackers || trackers.length === 0) return;
 
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
@@ -423,12 +424,13 @@ export function renderTrackers(
         chosenCandidate,
         line1,
         line2,
-        lineH
+        lineH,
+        isOnWhite
       );
     } else {
       // Space is constrained or all 4 directions collide:
       // Collapse label and render ONLY the minimal center reticle pip
-      renderCollapsedTracker(ctx, px, py, baseAlpha, p);
+      renderCollapsedTracker(ctx, px, py, baseAlpha, p, isOnWhite);
     }
   }
 
@@ -449,11 +451,13 @@ function renderFullTracker(
   dir: DirectionCandidate,
   line1: string,
   line2: string,
-  lineH: number
+  lineH: number,
+  isOnWhite: boolean
 ): void {
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
   ctx.save();
-  ctx.strokeStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
-  ctx.fillStyle = `rgba(100, 210, 255, ${baseAlpha.toFixed(2)})`;
+  ctx.strokeStyle = `rgba(${inkBase}, ${baseAlpha.toFixed(2)})`;
+  ctx.fillStyle = `rgba(${inkBase}, ${baseAlpha.toFixed(2)})`;
 
   // 1. Four HUD Corner Brackets
   ctx.beginPath();
@@ -497,12 +501,12 @@ function renderFullTracker(
   // 4. Telemetry Text Tags (Real depth & real feature intensity metric)
   ctx.textBaseline = 'top';
 
-  // Primary tag: crisp, high-luminance cyan-white
-  ctx.fillStyle = `rgba(225, 240, 255, ${(baseAlpha * 0.95).toFixed(2)})`;
+  // Primary tag: crisp --ink
+  ctx.fillStyle = `rgba(${inkBase}, ${(baseAlpha * 0.95).toFixed(2)})`;
   ctx.fillText(line1, dir.textX, dir.textY);
 
-  // Secondary telemetry: softer ice-blue
-  ctx.fillStyle = `rgba(145, 185, 215, ${(baseAlpha * 0.75).toFixed(2)})`;
+  // Secondary telemetry: softer --ink
+  ctx.fillStyle = `rgba(${inkBase}, ${(baseAlpha * 0.62).toFixed(2)})`;
   ctx.fillText(line2, dir.textX, dir.textY + lineH);
 
   ctx.restore();
@@ -516,12 +520,14 @@ function renderCollapsedTracker(
   px: number,
   py: number,
   baseAlpha: number,
-  p: TrackerPoint
+  p: TrackerPoint,
+  isOnWhite: boolean
 ): void {
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
   ctx.save();
   const alpha = baseAlpha * 0.75;
-  ctx.strokeStyle = `rgba(100, 210, 255, ${alpha.toFixed(2)})`;
-  ctx.fillStyle = `rgba(100, 210, 255, ${alpha.toFixed(2)})`;
+  ctx.strokeStyle = `rgba(${inkBase}, ${alpha.toFixed(2)})`;
+  ctx.fillStyle = `rgba(${inkBase}, ${alpha.toFixed(2)})`;
 
   if (p.intensity > 0.6) {
     // Micro center dot

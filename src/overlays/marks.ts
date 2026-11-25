@@ -51,16 +51,13 @@ function renderCropMarks(
   ctx.clip();
 
   const isOnWhite = renderState.colorMode === 'ON_WHITE';
-  const baseAlpha = isOnWhite ? 0.38 : 0.32;
-  const strokeColor = isOnWhite
-    ? `rgba(20, 25, 35, ${baseAlpha})`
-    : `rgba(140, 220, 255, ${baseAlpha})`;
-  const labelColor = isOnWhite
-    ? 'rgba(20, 25, 35, 0.45)'
-    : 'rgba(140, 220, 255, 0.40)';
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
+  const baseAlpha = 0.55;
+  const strokeColor = `rgba(${inkBase}, ${baseAlpha})`;
+  const labelColor = `rgba(${inkBase}, 0.55)`;
 
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
-  ctx.lineWidth = Math.max(0.75, lineWeight * 0.85);
+  ctx.lineWidth = Math.max(1.0, lineWeight);
   ctx.strokeStyle = strokeColor;
 
   // Compute unit direction vectors along top and left edges for perspective alignment
@@ -180,8 +177,8 @@ function renderCropMarks(
 
   // 6. Monospace Crop Aspect Ratio Metadata Tag
   if (tlValid) {
-    const fontSize = Math.round(8.5 * Math.min(1.2, Math.max(0.85, lineWeight * 0.85)));
-    ctx.font = `${fontSize}px "SF Mono", Menlo, Consolas, Monaco, monospace`;
+    const fontSize = Math.max(10, Math.round(10 * Math.min(1.2, Math.max(0.85, lineWeight * 0.9))));
+    ctx.font = `${fontSize}px ui-monospace, "SF Mono", Menlo, Consolas, Monaco, monospace`;
     ctx.fillStyle = labelColor;
     ctx.textBaseline = 'bottom';
     ctx.textAlign = 'left';
@@ -206,11 +203,13 @@ export function renderMarks(
 
   const { width, height } = renderState;
   const lineWeight = Math.max(0.5, settings.lineWeight || 1.0);
+  const isOnWhite = renderState.colorMode === 'ON_WHITE';
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
 
   ctx.save();
-  ctx.lineWidth = Math.max(0.6, lineWeight * 0.75);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.40)';
+  ctx.lineWidth = Math.max(1.0, lineWeight);
+  ctx.strokeStyle = `rgba(${inkBase}, 0.24)`;
+  ctx.fillStyle = `rgba(${inkBase}, 0.42)`;
 
   const margin = Math.max(16, Math.min(28, Math.min(width, height) * 0.035));
   const arm = 14;
@@ -244,7 +243,7 @@ export function renderMarks(
   const centerGap = 5;
   const crossLen = 12;
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.30)`;
   ctx.beginPath();
   // Horizontal center cross arms
   ctx.moveTo(cx - centerGap - crossLen, cy);
@@ -260,7 +259,7 @@ export function renderMarks(
   ctx.stroke();
 
   // Center ring (radius 22px) with 4 quadrant notches
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.14)`;
   ctx.beginPath();
   ctx.arc(cx, cy, 22, 0, Math.PI * 2);
   ctx.stroke();
@@ -272,7 +271,7 @@ export function renderMarks(
   const twoThirdsY = height * 0.667;
   const regArm = 3.5;
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.20)`;
   ctx.beginPath();
   const intersections: [number, number][] = [
     [oneThirdX, oneThirdY],
@@ -291,7 +290,7 @@ export function renderMarks(
   ctx.stroke();
 
   // 4. Perimeter Precision Ruler Ticks
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.strokeStyle = `rgba(${inkBase}, 0.16)`;
   ctx.beginPath();
   const tickSpacing = 24;
   for (let x = margin + 30; x <= width - margin - 30; x += tickSpacing) {
@@ -307,13 +306,13 @@ export function renderMarks(
   ctx.stroke();
 
   // 5. Inward Blueprint Monospace Annotations (Inward, away from perimeter UI collisions)
-  const fontSize = Math.round(8.5 * Math.min(1.2, Math.max(0.85, lineWeight * 0.85)));
-  ctx.font = `${fontSize}px "SF Mono", Menlo, Consolas, Monaco, monospace`;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+  const fontSize = Math.max(10, Math.round(10 * Math.min(1.2, Math.max(0.85, lineWeight * 0.9))));
+  ctx.font = `${fontSize}px ui-monospace, "SF Mono", Menlo, Consolas, Monaco, monospace`;
+  ctx.fillStyle = `rgba(${inkBase}, 0.26)`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText('OPTICAL // RETICLE', cx + 28, cy - 8);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.fillStyle = `rgba(${inkBase}, 0.18)`;
   ctx.fillText(`AXIS: 0.0, 0.0`, cx + 28, cy + 8);
 
   ctx.restore();

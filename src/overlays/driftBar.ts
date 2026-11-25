@@ -13,7 +13,7 @@ export function renderDriftBar(
 ): void {
   const isActive = !!(bar.hovered || bar.dragging);
   const isOnWhite = colorMode === 'ON_WHITE';
-  const inkBase = isOnWhite ? '20, 25, 35' : '236, 232, 225';
+  const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
   const alpha = isActive ? 1.0 : 0.55;
   const strokeColor = `rgba(${inkBase}, ${alpha})`;
 

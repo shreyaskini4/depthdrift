@@ -1,0 +1,17 @@
+{
+  "name": "Drift",
+  "short_name": "Drift",
+  "description": "Browser-only generative particle depth canvas driven by client-side depth estimation.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050506",
+  "theme_color": "#050506",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

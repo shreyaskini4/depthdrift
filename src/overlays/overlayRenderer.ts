@@ -151,6 +151,59 @@ export class OverlayRendererImpl implements OverlayRenderer {
       renderDriftBar(ctx, renderState.driftBar, renderState.colorMode);
     }
 
+    // 10. Permanent Debug Crosshair at Canvas Centre (active when ?debug or debug setting is enabled)
+    const isDebug =
+      !!renderState.debug ||
+      (typeof window !== 'undefined' && window.location.search.includes('debug'));
+    if (isDebug) {
+      this.renderDebugCrosshair(ctx, renderState);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Renders a permanent precision crosshair at exact canvas center when debug mode is enabled.
+   */
+  private renderDebugCrosshair(ctx: CanvasRenderingContext2D, renderState: EngineRenderState): void {
+    const cx = this.width * 0.5;
+    const cy = this.height * 0.5;
+    const isOnWhite = renderState.colorMode === 'ON_WHITE';
+    const inkBase = isOnWhite ? '20, 20, 22' : '236, 232, 225';
+
+    ctx.save();
+    ctx.lineWidth = 1.0;
+    ctx.strokeStyle = `rgba(${inkBase}, 0.90)`;
+    ctx.fillStyle = `rgba(${inkBase}, 0.85)`;
+
+    const arm = 20;
+    const gap = 3;
+
+    ctx.beginPath();
+    // Horizontal crosshair arms
+    ctx.moveTo(cx - arm, cy);
+    ctx.lineTo(cx - gap, cy);
+    ctx.moveTo(cx + gap, cy);
+    ctx.lineTo(cx + arm, cy);
+
+    // Vertical crosshair arms
+    ctx.moveTo(cx, cy - arm);
+    ctx.lineTo(cx, cy - gap);
+    ctx.moveTo(cx, cy + gap);
+    ctx.lineTo(cx, cy + arm);
+    ctx.stroke();
+
+    // Center reticle ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Coordinates label
+    ctx.font = '10px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`+ [${cx.toFixed(0)}, ${cy.toFixed(0)}]`, cx + 6, cy + 6);
+
     ctx.restore();
   }
 

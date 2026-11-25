@@ -28,6 +28,7 @@ export interface SampledParticles {
   trackers: BaseTracker[];
   aspect: number;
   count: number;
+  contentCenter?: { x: number; y: number };
 }
 
 export interface SampleOptions {
@@ -344,6 +345,69 @@ export function sampleImageAndDepth(
     }
   }
 
+  // Compute contentCenter from luminance grid (1% and 99% cumulative positions along x and y)
+  const lumX = new Float64Array(gridW);
+  const lumY = new Float64Array(gridH);
+  let totalLuma = 0;
+
+  for (let gy = 0; gy < gridH; gy++) {
+    const rowOffset = gy * gridW;
+    for (let gx = 0; gx < gridW; gx++) {
+      const luma = luminanceGrid[rowOffset + gx];
+      lumX[gx] += luma;
+      lumY[gy] += luma;
+      totalLuma += luma;
+    }
+  }
+
+  let contentCenter = { x: 0, y: 0 };
+  if (totalLuma > 1e-5) {
+    let cumX = 0;
+    const thresh1X = totalLuma * 0.01;
+    const thresh99X = totalLuma * 0.99;
+    let u01 = 0;
+    let u99 = 1;
+    let found01X = false;
+
+    for (let gx = 0; gx < gridW; gx++) {
+      cumX += lumX[gx];
+      if (!found01X && cumX >= thresh1X) {
+        u01 = (gx + 0.5) * invGridW;
+        found01X = true;
+      }
+      if (cumX >= thresh99X) {
+        u99 = (gx + 0.5) * invGridW;
+        break;
+      }
+    }
+
+    let cumY = 0;
+    const thresh1Y = totalLuma * 0.01;
+    const thresh99Y = totalLuma * 0.99;
+    let v01 = 0;
+    let v99 = 1;
+    let found01Y = false;
+
+    for (let gy = 0; gy < gridH; gy++) {
+      cumY += lumY[gy];
+      if (!found01Y && cumY >= thresh1Y) {
+        v01 = (gy + 0.5) * invGridH;
+        found01Y = true;
+      }
+      if (cumY >= thresh99Y) {
+        v99 = (gy + 0.5) * invGridH;
+        break;
+      }
+    }
+
+    const uMid = (u01 + u99) * 0.5;
+    const vMid = (v01 + v99) * 0.5;
+    contentCenter = {
+      x: (uMid - 0.5) * aspect,
+      y: 0.5 - vMid,
+    };
+  }
+
   // 2. Compute edge gradients and salience
   const cdf = new Float64Array(totalCells);
   let cumulativeWeight = 0;
@@ -654,6 +718,7 @@ export function sampleImageAndDepth(
     trackers,
     aspect,
     count: p,
+    contentCenter,
   };
 }
 
@@ -776,5 +841,6 @@ export function createDefaultParticles(count: number = MAX_PARTICLE_CAPACITY): S
     trackers,
     aspect,
     count,
+    contentCenter: { x: 0, y: 0 },
   };
 }

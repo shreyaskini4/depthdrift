@@ -57,6 +57,7 @@ export const DEFAULT_SETTINGS: ParticleSettings = {
     cropMarks: true,
   },
   adaptiveFPS: true,
+  centerOnContent: true,
 };
 
 const MODE_MAP: Record<string, ModeName> = {
@@ -83,6 +84,13 @@ function disposeImageItem(item: ImageItem): void {
     }
   } catch {
     // ignore
+  }
+}
+
+declare global {
+  interface Window {
+    driftEngine?: ReturnType<typeof createParticleEngine>;
+    __driftApp?: DriftApp;
   }
 }
 
@@ -115,6 +123,7 @@ class DriftApp {
 
   private animationFrameId: number | null = null;
   private useProceduralFallbackOnly: boolean = false;
+  private canvasResizeObserver: ResizeObserver | null = null;
 
   constructor() {
     this.particleCanvas = document.getElementById('particle-canvas') as HTMLCanvasElement;
@@ -126,6 +135,8 @@ class DriftApp {
 
     // Initialize particle engine and overlay renderer once with the DOM canvas elements
     this.particleEngine = createParticleEngine(this.particleCanvas, this.state.settings);
+    window.driftEngine = this.particleEngine;
+    window.__driftApp = this;
     this.overlayRenderer = new OverlayRendererImpl(this.overlayCanvas);
 
     // Initialize Video Recorder
@@ -630,11 +641,28 @@ class DriftApp {
 
   private setupWindowEvents(): void {
     window.addEventListener('resize', () => this.handleResize());
+
+    if (typeof ResizeObserver !== 'undefined' && this.particleCanvas) {
+      this.canvasResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.target === this.particleCanvas) {
+            const rect = entry.contentRect;
+            const w = Math.round(rect.width) || window.innerWidth;
+            const h = Math.round(rect.height) || window.innerHeight;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
+            this.particleEngine.resize(w, h, dpr);
+            this.overlayRenderer.resize(w, h, dpr);
+          }
+        }
+      });
+      this.canvasResizeObserver.observe(this.particleCanvas);
+    }
   }
 
   private handleResize(): void {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const rect = this.particleCanvas?.getBoundingClientRect?.();
+    const width = rect && rect.width > 0 ? Math.round(rect.width) : window.innerWidth;
+    const height = rect && rect.height > 0 ? Math.round(rect.height) : window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
 
     this.particleEngine.resize(width, height, dpr);
@@ -664,6 +692,10 @@ class DriftApp {
   }
 
   public dispose(): void {
+    if (this.canvasResizeObserver) {
+      this.canvasResizeObserver.disconnect();
+      this.canvasResizeObserver = null;
+    }
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
     }

@@ -69,6 +69,8 @@ export interface ParticleSettings {
   adaptiveFPS: boolean;
   /** Debug mode flag */
   debug?: boolean;
+  /** Center view on subject visual mass / content center (default: true) */
+  centerOnContent?: boolean;
 }
 
 export interface TrackerPoint {
@@ -149,6 +151,8 @@ export interface EngineRenderState {
   modeTransition?: number;
   drift?: { pos: number; angleDeg: number; feather: number };
   driftBar?: DriftBar;
+  debug?: boolean;
+  contentCenter?: { x: number; y: number };
 }
 
 export interface UserDrawingPoint {
@@ -228,6 +232,8 @@ export interface ParticleEngine {
   setDriftDragging?(dragging: boolean): void;
   render(t?: number): EngineRenderState;
   getRenderState(): EngineRenderState;
+  measureImageCenter?(): { cx: number; cy: number; offsetPx: [number, number] };
+  getCenteringDiagnostics?(): Record<string, unknown>;
   setDebug?(debug: boolean): void;
   dispose(): void;
 }

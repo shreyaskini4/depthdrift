@@ -137,6 +137,8 @@ export class CreditsModal {
   private backdrop: HTMLElement;
   private options: CreditsModalOptions;
   private isOpen: boolean = false;
+  private previousFocus: HTMLElement | null = null;
+  private handleKeyDown: (e: KeyboardEvent) => void;
 
   constructor(parent: HTMLElement, options: CreditsModalOptions) {
     this.options = options;
@@ -149,7 +151,15 @@ export class CreditsModal {
     this.container.className = 'credits-modal-panel glassmorphic-panel';
     this.container.setAttribute('role', 'dialog');
     this.container.setAttribute('aria-modal', 'true');
-    this.container.setAttribute('aria-label', 'Open-Source Credits and Licenses');
+    this.container.setAttribute('aria-label', 'Open-source credits and licenses');
+
+    this.handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.isOpen) {
+        e.preventDefault();
+        this.close();
+      }
+    };
+    window.addEventListener('keydown', this.handleKeyDown);
 
     this.render();
     parent.appendChild(this.backdrop);
@@ -157,16 +167,24 @@ export class CreditsModal {
   }
 
   public open(): void {
+    this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.isOpen = true;
     this.backdrop.classList.add('active');
     this.container.classList.add('open');
+    const closeBtn = this.container.querySelector<HTMLButtonElement>('.credits-close-btn');
+    closeBtn?.focus();
   }
 
   public close(): void {
+    if (!this.isOpen) return;
     this.isOpen = false;
     this.backdrop.classList.remove('active');
     this.container.classList.remove('open');
     this.options.onClose();
+    if (this.previousFocus && this.previousFocus.isConnected) {
+      this.previousFocus.focus();
+    }
+    this.previousFocus = null;
   }
 
   public toggle(): void {
@@ -185,17 +203,17 @@ export class CreditsModal {
     this.container.innerHTML = `
       <div class="credits-header">
         <div class="credits-title-group">
-          <h2 class="credits-title">Credits & Open-Source Licenses</h2>
+          <h2 class="credits-title">Credits &amp; open-source licenses</h2>
           <span class="credits-subtitle">Open-source software powering Drift</span>
         </div>
-        <button class="credits-close-btn" aria-label="Close Credits (Esc)" title="Close Credits (Esc)">
+        <button type="button" class="credits-close-btn" aria-label="Close credits (Esc)" title="Close credits (Esc)">
           ${ICONS.close}
         </button>
       </div>
 
       <div class="credits-body">
         <p class="credits-intro">
-          Drift is built entirely on open-source web technologies and state-of-the-art vision models. All image processing and neural network depth inference run 100% locally in your browser.
+          Drift is built on open-source web technologies and client-side vision models. All image processing and neural network depth inference run locally in your browser.
         </p>
 
         <div class="credits-list">
@@ -217,7 +235,7 @@ export class CreditsModal {
               <p class="credit-description">${item.description}</p>
 
               <details class="credit-license-accordion">
-                <summary class="license-summary">View Full License</summary>
+                <summary class="license-summary">View full license</summary>
                 <pre class="license-pre"><code>${item.licenseText}</code></pre>
               </details>
             </div>

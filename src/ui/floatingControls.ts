@@ -143,14 +143,24 @@ export class FloatingControls {
       if (dockViewport) {
         this.resizeObserver.observe(dockViewport);
       }
+      const driftStrip = this.container.querySelector('.drift-strip');
+      if (driftStrip) {
+        this.resizeObserver.observe(driftStrip);
+      }
     }
   }
 
   private updateScrollMask = (): void => {
     const viewport = this.container.querySelector<HTMLElement>('.dock-scroll-viewport');
-    if (!viewport) return;
-    const isOverflowing = viewport.scrollWidth > viewport.clientWidth + 2;
-    viewport.classList.toggle('has-overflow', isOverflowing);
+    if (viewport) {
+      const isOverflowing = viewport.scrollWidth > viewport.clientWidth + 2;
+      viewport.classList.toggle('has-overflow', isOverflowing);
+    }
+    const driftStrip = this.container.querySelector<HTMLElement>('.drift-strip');
+    if (driftStrip) {
+      const isDriftOverflowing = driftStrip.scrollWidth > driftStrip.clientWidth + 2;
+      driftStrip.classList.toggle('has-overflow', isDriftOverflowing);
+    }
   };
 
   private onDocumentPointerDown = (e: PointerEvent): void => {
@@ -551,7 +561,7 @@ export class FloatingControls {
               <button class="action-icon-btn btn-zoom btn-zoom-out" aria-label="Zoom Out (-)" title="Zoom Out (-)">
                 ${ICONS.minus}
               </button>
-              <span class="zoom-val-text" aria-label="Current zoom" title="Current Zoom">${Math.round(this.currentZoom * 100)}%</span>
+              <button type="button" class="zoom-val-text" aria-label="Reset zoom to 100% (0)" title="Reset zoom to 100% (0)">${Math.round(this.currentZoom * 100)}%</button>
               <button class="action-icon-btn btn-zoom btn-zoom-reset" aria-label="Reset View (0)" title="Reset View (0)">
                 ${ICONS.refresh}
               </button>
@@ -727,6 +737,11 @@ export class FloatingControls {
 
     const zoomResetBtn = this.container.querySelector('.btn-zoom-reset');
     zoomResetBtn?.addEventListener('click', () => {
+      this.options.onZoomReset?.();
+    });
+
+    const zoomValTextBtn = this.container.querySelector('.zoom-val-text');
+    zoomValTextBtn?.addEventListener('click', () => {
       this.options.onZoomReset?.();
     });
 

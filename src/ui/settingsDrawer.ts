@@ -4,7 +4,7 @@
  * debug telemetry control, and Depth Anything V2 ONNX architecture details.
  */
 
-import type { OverlayName, ParticleSettings, QualityLevel } from '@/types';
+import type { ColorMode, OverlayName, ParticleSettings, QualityLevel } from '@/types';
 import { ICONS } from './icons';
 
 export interface SettingsDrawerOptions {
@@ -12,13 +12,21 @@ export interface SettingsDrawerOptions {
   onResetDefaults: () => void;
   onClose: () => void;
   onToggleDepthView?: () => void;
+  onZoomReset?: () => void;
+  onOpenCredits?: () => void;
 }
 
 const QUALITY_NOTES: Record<QualityLevel, string> = {
-  STANDARD: 'Standard: 1x DPR (fastest, mobile & battery friendly)',
-  HIGH: 'High: 2x supersampling (balanced, crisp particle clarity)',
-  ULTRA: 'Ultra: 3x supersampling (maximum fidelity, heavy GPU load)',
+  STANDARD: 'Standard: 1x DPR, lowest GPU load and best battery life.',
+  HIGH: 'High: 2x supersampling, balanced clarity and frame rate.',
+  ULTRA: 'Ultra: 3x supersampling, highest fidelity with heavy GPU load.',
 };
+
+const PALETTE_OPTIONS: { value: ColorMode; label: string }[] = [
+  { value: 'TRUE', label: 'True' },
+  { value: 'NEGATIVE', label: 'Negative' },
+  { value: 'ON_WHITE', label: 'Paper' },
+];
 
 const OVERLAYS_LIST: { name: OverlayName; label: string }[] = [
   { name: 'MARKS', label: 'Marks' },
@@ -37,6 +45,9 @@ export class SettingsDrawer {
   private isOpen: boolean = false;
   private depthMode: 'MODEL' | 'HEURISTIC' = 'MODEL';
   private pipelineProvider: string = 'WEBGPU';
+  private driftFeather: number = 0.35;
+  private previousFocus: HTMLElement | null = null;
+  private handleKeyDown: (e: KeyboardEvent) => void;
 
   constructor(parent: HTMLElement, initialSettings: ParticleSettings, options: SettingsDrawerOptions) {
     this.options = options;
@@ -56,7 +67,15 @@ export class SettingsDrawer {
     this.container.className = 'settings-drawer-panel';
     this.container.setAttribute('role', 'dialog');
     this.container.setAttribute('aria-modal', 'true');
-    this.container.setAttribute('aria-label', 'Engine Settings');
+    this.container.setAttribute('aria-label', 'Simulation settings');
+
+    this.handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.isOpen) {
+        e.preventDefault();
+        this.close();
+      }
+    };
+    window.addEventListener('keydown', this.handleKeyDown);
 
     this.render();
     parent.appendChild(this.backdrop);
@@ -65,7 +84,11 @@ export class SettingsDrawer {
 
   public updateSettings(settings: ParticleSettings): void {
     this.settings = JSON.parse(JSON.stringify(settings));
-    this.render();
+    if (this.container.querySelector('.drawer-body')) {
+      this.syncDOM();
+    } else {
+      this.render();
+    }
   }
 
   public setPipelineProvider(provider: string): void {
@@ -75,7 +98,7 @@ export class SettingsDrawer {
       if (formatted === 'PROCEDURAL' || formatted === 'HEURISTIC') {
         this.depthMode = 'HEURISTIC';
       }
-      this.render();
+      this.syncProviderStatus();
     }
   }
 
@@ -93,21 +116,30 @@ export class SettingsDrawer {
       }
     }
     if (changed) {
-      this.render();
+      this.syncProviderStatus();
     }
   }
 
   public open(): void {
+    this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.syncFeatherFromDock();
     this.isOpen = true;
     this.backdrop.classList.add('active');
     this.container.classList.add('open');
+    const closeBtn = this.container.querySelector<HTMLButtonElement>('.drawer-close-btn');
+    closeBtn?.focus();
   }
 
   public close(): void {
+    if (!this.isOpen) return;
     this.isOpen = false;
     this.backdrop.classList.remove('active');
     this.container.classList.remove('open');
     this.options.onClose();
+    if (this.previousFocus && this.previousFocus.isConnected) {
+      this.previousFocus.focus();
+    }
+    this.previousFocus = null;
   }
 
   public toggle(): void {
@@ -126,6 +158,126 @@ export class SettingsDrawer {
     return (val / 1000).toFixed(0) + 'k';
   }
 
+  private formatTrackerDensity(val: number): string {
+    const label = val <= 0.3 ? 'Sparse' : val >= 0.7 ? 'Dense' : 'Balanced';
+    return `${label} (${val.toFixed(2)})`;
+  }
+
+  private formatModeLabel(): string {
+    return this.depthMode === 'MODEL' ? 'Model' : 'Heuristic';
+  }
+
+  private formatProviderLabel(): string {
+    if (this.pipelineProvider === 'WEBGPU') return 'WebGPU';
+    if (this.pipelineProvider === 'WASM') return 'WASM';
+    if (this.pipelineProvider === 'PROCEDURAL') return 'Procedural';
+    return this.pipelineProvider;
+  }
+
+  private syncFeatherFromDock(): void {
+    const dockSlider = document.querySelector<HTMLInputElement>('#drift-softness-slider');
+    if (dockSlider) {
+      const val = parseFloat(dockSlider.value);
+      if (!Number.isNaN(val)) {
+        this.driftFeather = val;
+        const drawerSlider = this.container.querySelector<HTMLInputElement>('#slider-drift-feather');
+        const drawerVal = this.container.querySelector('#val-drift-feather');
+        if (drawerSlider) drawerSlider.value = String(val);
+        if (drawerVal) drawerVal.textContent = `${Math.round(val * 100)}%`;
+      }
+    }
+  }
+
+  private syncProviderStatus(): void {
+    const pill = this.container.querySelector('.depth-hud-pill');
+    const modeEl = this.container.querySelector('.depth-hud-mode');
+    const provEl = this.container.querySelector('.depth-hud-provider');
+    if (pill) {
+      pill.className = `depth-hud-pill depth-hud-${this.depthMode.toLowerCase()}`;
+    }
+    if (modeEl) modeEl.textContent = this.formatModeLabel();
+    if (provEl) provEl.textContent = this.formatProviderLabel();
+  }
+
+  private syncDOM(): void {
+    const s = this.settings;
+    const ov = s.overlays;
+
+    // Palette
+    this.container.querySelectorAll<HTMLButtonElement>('.palette-seg-btn').forEach((btn) => {
+      const active = btn.dataset.color === s.colorMode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+
+    // Quality
+    this.container.querySelectorAll<HTMLButtonElement>('.quality-seg-btn').forEach((btn) => {
+      const active = btn.dataset.quality === s.quality;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+    const qualityNote = this.container.querySelector('#quality-cost-note');
+    if (qualityNote) {
+      qualityNote.textContent = QUALITY_NOTES[s.quality] || QUALITY_NOTES.HIGH;
+    }
+
+    // Sliders
+    this.setSlider('#slider-intensity', '#val-intensity', s.intensity, `${s.intensity.toFixed(2)}x`);
+    this.setSlider('#slider-point-size', '#val-point-size', s.pointSize, `${s.pointSize.toFixed(1)}px`);
+    this.setSlider('#slider-noise-speed', '#val-noise-speed', s.noiseSpeed, s.noiseSpeed.toFixed(2));
+    this.setSlider('#slider-noise-strength', '#val-noise-strength', s.noiseStrength, s.noiseStrength.toFixed(2));
+    this.setSlider('#slider-splash-strength', '#val-splash-strength', s.splashStrength, s.splashStrength.toFixed(2));
+    this.setSlider('#slider-depth-scale', '#val-depth-scale', s.depthScale, `${s.depthScale.toFixed(2)}x`);
+    this.setSlider('#slider-particle-count', '#val-particle-count', s.particleCount, this.formatCount(s.particleCount));
+    this.setSlider('#slider-line-weight', '#val-line-weight', ov.lineWeight, `${ov.lineWeight.toFixed(1)}px`);
+    this.setSlider(
+      '#slider-tracker-density',
+      '#val-tracker-density',
+      ov.trackerDensity,
+      this.formatTrackerDensity(ov.trackerDensity)
+    );
+    this.setSlider(
+      '#slider-link-distance',
+      '#val-link-distance',
+      ov.linkDistanceThreshold,
+      ov.linkDistanceThreshold.toFixed(3)
+    );
+    this.setSlider('#slider-scan-speed', '#val-scan-speed', ov.scanSpeed, `${ov.scanSpeed.toFixed(2)}x`);
+    this.setSlider('#slider-trail-fade', '#val-trail-fade', ov.trailFade, ov.trailFade.toFixed(2));
+
+    // Checkboxes
+    const fpsCheck = this.container.querySelector<HTMLInputElement>('#toggle-adaptive-fps');
+    if (fpsCheck) fpsCheck.checked = !!s.adaptiveFPS;
+
+    const centerCheck = this.container.querySelector<HTMLInputElement>('#toggle-center-on-content');
+    if (centerCheck) centerCheck.checked = s.centerOnContent !== false;
+
+    const debugCheck = this.container.querySelector<HTMLInputElement>('#toggle-debug-readout');
+    if (debugCheck) debugCheck.checked = !!s.debug;
+
+    // Overlays
+    this.container.querySelectorAll<HTMLButtonElement>('.drawer-overlay-btn').forEach((btn) => {
+      const overlayName = btn.dataset.overlay as OverlayName | undefined;
+      const toggleType = btn.dataset.toggle;
+      if (toggleType === 'cropMarks') {
+        const active = ov.cropMarks !== false;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      } else if (overlayName) {
+        const active = !!ov.active[overlayName];
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
+    });
+  }
+
+  private setSlider(sliderSel: string, valSel: string, numValue: number, textValue: string): void {
+    const slider = this.container.querySelector<HTMLInputElement>(sliderSel);
+    const valEl = this.container.querySelector(valSel);
+    if (slider) slider.value = String(numValue);
+    if (valEl) valEl.textContent = textValue;
+  }
+
   public render(): void {
     const s = this.settings;
     const ov = s.overlays;
@@ -134,217 +286,286 @@ export class SettingsDrawer {
     this.container.innerHTML = `
       <div class="drawer-header">
         <div class="drawer-title-group">
-          <h2 class="drawer-title">Simulation Settings</h2>
-          <span class="drawer-subtitle">Particle & HUD Parameters</span>
+          <h2 class="drawer-title">Settings</h2>
+          <span class="drawer-subtitle">Particle &amp; HUD parameters</span>
         </div>
-        <button class="drawer-close-btn" aria-label="Close Settings (Esc)" title="Close Settings (Esc)">
+        <button type="button" class="drawer-close-btn" aria-label="Close settings (Esc)" title="Close settings (Esc)">
           ${ICONS.close}
         </button>
       </div>
 
       <div class="drawer-body">
-        <!-- Section: Quality Preset -->
+        <!-- Section: Look -->
         <div class="settings-section">
-          <h3 class="section-title">Rendering Quality</h3>
+          <h3 class="section-title">Look</h3>
+
+          <!-- Intensity Slider (0.5 to 2.0) -->
           <div class="setting-item">
-            <div class="quality-segmented-control" role="radiogroup" aria-label="Quality preset selection">
-              <button 
-                class="quality-seg-btn ${s.quality === 'STANDARD' ? 'active' : ''}" 
+            <div class="setting-label-row">
+              <label for="slider-intensity">Intensity</label>
+              <span class="setting-value" id="val-intensity">${s.intensity.toFixed(2)}x</span>
+            </div>
+            <input
+              type="range"
+              id="slider-intensity"
+              min="0.5"
+              max="2.0"
+              step="0.05"
+              value="${s.intensity}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Point Size Slider (0.6 to 3.0) -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-point-size">Point size</label>
+              <span class="setting-value" id="val-point-size">${s.pointSize.toFixed(1)}px</span>
+            </div>
+            <input
+              type="range"
+              id="slider-point-size"
+              min="0.6"
+              max="3.0"
+              step="0.1"
+              value="${s.pointSize}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Palette Selector -->
+          <div class="setting-item">
+            <span class="setting-subhead" id="label-palette-select">Palette</span>
+            <div class="quality-segmented-control" role="radiogroup" aria-labelledby="label-palette-select">
+              ${PALETTE_OPTIONS.map((opt) => {
+                const active = s.colorMode === opt.value;
+                return `
+                  <button
+                    type="button"
+                    class="quality-seg-btn palette-seg-btn ${active ? 'active' : ''}"
+                    data-color="${opt.value}"
+                    role="radio"
+                    aria-checked="${active}"
+                  >
+                    ${opt.label}
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Motion -->
+        <div class="settings-section">
+          <h3 class="section-title">Motion</h3>
+
+          <!-- Speed Slider -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-noise-speed">Speed</label>
+              <span class="setting-value" id="val-noise-speed">${s.noiseSpeed.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              id="slider-noise-speed"
+              min="0.0"
+              max="2.5"
+              step="0.05"
+              value="${s.noiseSpeed}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Strength Slider -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-noise-strength">Strength</label>
+              <span class="setting-value" id="val-noise-strength">${s.noiseStrength.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              id="slider-noise-strength"
+              min="0.0"
+              max="3.0"
+              step="0.05"
+              value="${s.noiseStrength}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Splash Impulse Slider -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-splash-strength">Splash impulse</label>
+              <span class="setting-value" id="val-splash-strength">${s.splashStrength.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              id="slider-splash-strength"
+              min="0.2"
+              max="4.0"
+              step="0.1"
+              value="${s.splashStrength}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Softness (Drift feather) Slider -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-drift-feather">Softness</label>
+              <span class="setting-value" id="val-drift-feather">${Math.round(this.driftFeather * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              id="slider-drift-feather"
+              min="0.05"
+              max="1.0"
+              step="0.05"
+              value="${this.driftFeather}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Depth Extrusion Slider (0.0 to 1.0) -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-depth-scale">Depth</label>
+              <span class="setting-value" id="val-depth-scale">${s.depthScale.toFixed(2)}x</span>
+            </div>
+            <input
+              type="range"
+              id="slider-depth-scale"
+              min="0.0"
+              max="1.0"
+              step="0.05"
+              value="${s.depthScale}"
+              class="range-slider"
+            />
+          </div>
+        </div>
+
+        <!-- Section: Quality -->
+        <div class="settings-section">
+          <h3 class="section-title">Quality</h3>
+
+          <!-- Particle Count Slider (100k to 600k) -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label for="slider-particle-count">Particle count</label>
+              <span class="setting-value" id="val-particle-count">${this.formatCount(s.particleCount)}</span>
+            </div>
+            <input
+              type="range"
+              id="slider-particle-count"
+              min="100000"
+              max="600000"
+              step="25000"
+              value="${s.particleCount}"
+              class="range-slider"
+            />
+          </div>
+
+          <!-- Render Quality Segmented Control -->
+          <div class="setting-item">
+            <span class="setting-subhead" id="label-render-quality">Render quality</span>
+            <div class="quality-segmented-control" role="radiogroup" aria-labelledby="label-render-quality">
+              <button
+                type="button"
+                class="quality-seg-btn ${s.quality === 'STANDARD' ? 'active' : ''}"
                 data-quality="STANDARD"
                 role="radio"
                 aria-checked="${s.quality === 'STANDARD'}"
               >
-                STANDARD
+                Standard
               </button>
-              <button 
-                class="quality-seg-btn ${s.quality === 'HIGH' ? 'active' : ''}" 
+              <button
+                type="button"
+                class="quality-seg-btn ${s.quality === 'HIGH' ? 'active' : ''}"
                 data-quality="HIGH"
                 role="radio"
                 aria-checked="${s.quality === 'HIGH'}"
               >
-                HIGH
+                High
               </button>
-              <button 
-                class="quality-seg-btn ${s.quality === 'ULTRA' ? 'active' : ''}" 
+              <button
+                type="button"
+                class="quality-seg-btn ${s.quality === 'ULTRA' ? 'active' : ''}"
                 data-quality="ULTRA"
                 role="radio"
                 aria-checked="${s.quality === 'ULTRA'}"
               >
-                ULTRA
+                Ultra
               </button>
             </div>
             <span class="quality-note" id="quality-cost-note">
               ${QUALITY_NOTES[s.quality] || QUALITY_NOTES.HIGH}
             </span>
           </div>
-        </div>
-
-        <!-- Section: Particles & Depth Geometry -->
-        <div class="settings-section">
-          <h3 class="section-title">Particles & Geometry</h3>
-
-          <!-- Intensity Slider (0.5 to 2.0, step 0.05, default 1.35) -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-intensity">Intensity Multiplier</label>
-              <span class="setting-value" id="val-intensity">${s.intensity.toFixed(2)}x</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-intensity" 
-              min="0.5" 
-              max="2.0" 
-              step="0.05" 
-              value="${s.intensity}" 
-              class="range-slider"
-            />
-          </div>
-
-          <!-- Particle Count Slider (100k to 600k, step 25k, default 450k) -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-particle-count">Particle Count</label>
-              <span class="setting-value" id="val-particle-count">${this.formatCount(s.particleCount)}</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-particle-count" 
-              min="100000" 
-              max="600000" 
-              step="25000" 
-              value="${s.particleCount}" 
-              class="range-slider"
-            />
-          </div>
-
-          <!-- Point Size Slider (0.6 to 3.0, default 1.0) -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-point-size">Point Size</label>
-              <span class="setting-value" id="val-point-size">${s.pointSize.toFixed(1)}px</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-point-size" 
-              min="0.6" 
-              max="3.0" 
-              step="0.1" 
-              value="${s.pointSize}" 
-              class="range-slider"
-            />
-          </div>
-
-          <!-- Depth Extrusion Slider (0.0 to 1.0, default 0.3) -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-depth-scale">Depth Extrusion Scale</label>
-              <span class="setting-value" id="val-depth-scale">${s.depthScale.toFixed(2)}x</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-depth-scale" 
-              min="0.0" 
-              max="1.0" 
-              step="0.05" 
-              value="${s.depthScale}" 
-              class="range-slider"
-            />
-          </div>
 
           <!-- Adaptive 60 FPS Toggle -->
           <div class="setting-item toggle-item">
             <div class="toggle-text">
               <label for="toggle-adaptive-fps" class="toggle-label">Adaptive 60 FPS</label>
-              <span class="toggle-description">Dynamically balances particle count to maintain 60 FPS</span>
+              <span class="toggle-description">Balances particle count to maintain 60 FPS</span>
             </div>
             <label class="switch">
               <input type="checkbox" id="toggle-adaptive-fps" ${s.adaptiveFPS ? 'checked' : ''} />
               <span class="slider-switch"></span>
             </label>
           </div>
+        </div>
+
+        <!-- Section: View -->
+        <div class="settings-section">
+          <h3 class="section-title">View</h3>
+
+          <!-- Centre on subject Toggle -->
+          <div class="setting-item toggle-item">
+            <div class="toggle-text">
+              <label for="toggle-center-on-content" class="toggle-label">Centre on subject</label>
+              <span class="toggle-description">Centers viewport on subject visual mass</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-center-on-content" ${s.centerOnContent !== false ? 'checked' : ''} />
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- Reset View -->
+          <div class="setting-item action-item">
+            <div class="setting-label-row">
+              <span class="setting-label-text">Viewport camera</span>
+              <span class="setting-shortcut">Key [0]</span>
+            </div>
+            <button type="button" id="btn-reset-view" class="btn-drawer-action" title="Reset camera zoom and pan (0)">
+              ${ICONS.refresh}
+              <span>Reset view</span>
+            </button>
+          </div>
 
           <!-- Inspect Depth Map -->
           <div class="setting-item action-item">
             <div class="setting-label-row">
-              <label>Depth Map Inspector</label>
+              <span class="setting-label-text">Depth map inspector</span>
               <span class="setting-shortcut">Key [D]</span>
             </div>
-            <button id="btn-show-depth-map" class="btn-drawer-action" title="View 2D Monocular Depth Map">
+            <button type="button" id="btn-show-depth-map" class="btn-drawer-action" title="View 2D monocular depth map">
               ${ICONS.layers}
-              <span>Inspect Depth Map (D)</span>
+              <span>Inspect depth map (D)</span>
             </button>
           </div>
-        </div>
-
-        <!-- Section: Motion Dynamics -->
-        <div class="settings-section">
-          <h3 class="section-title">Motion Dynamics</h3>
-
-          <!-- Noise Speed Slider -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-noise-speed">Noise Animation Speed</label>
-              <span class="setting-value" id="val-noise-speed">${s.noiseSpeed.toFixed(2)}</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-noise-speed" 
-              min="0.0" 
-              max="2.5" 
-              step="0.05" 
-              value="${s.noiseSpeed}" 
-              class="range-slider"
-            />
-          </div>
-
-          <!-- Noise Strength Slider -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-noise-strength">Noise Displacement Strength</label>
-              <span class="setting-value" id="val-noise-strength">${s.noiseStrength.toFixed(2)}</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-noise-strength" 
-              min="0.0" 
-              max="3.0" 
-              step="0.05" 
-              value="${s.noiseStrength}" 
-              class="range-slider"
-            />
-          </div>
-
-          <!-- Splash Strength Slider -->
-          <div class="setting-item">
-            <div class="setting-label-row">
-              <label for="slider-splash-strength">Splash Impulse Strength</label>
-              <span class="setting-value" id="val-splash-strength">${s.splashStrength.toFixed(2)}</span>
-            </div>
-            <input 
-              type="range" 
-              id="slider-splash-strength" 
-              min="0.2" 
-              max="4.0" 
-              step="0.1" 
-              value="${s.splashStrength}" 
-              class="range-slider"
-            />
-          </div>
-        </div>
-
-        <!-- Section: HUD & Overlay Options -->
-        <div class="settings-section">
-          <h3 class="section-title">HUD & Overlay Layers</h3>
 
           <!-- Active Overlays Pills -->
           <div class="setting-item">
-            <label class="setting-subhead">Toggle Layers</label>
-            <div class="drawer-overlays-grid">
+            <span class="setting-subhead" id="label-overlay-layers">Overlay layers</span>
+            <div class="drawer-overlays-grid" role="group" aria-labelledby="label-overlay-layers">
               ${OVERLAYS_LIST.map((item) => {
                 const active = !!ov.active[item.name];
                 return `
-                  <button 
-                    class="drawer-overlay-btn ${active ? 'active' : ''}" 
+                  <button
+                    type="button"
+                    class="drawer-overlay-btn ${active ? 'active' : ''}"
                     data-overlay="${item.name}"
                     aria-pressed="${active}"
                   >
@@ -353,13 +574,14 @@ export class SettingsDrawer {
                   </button>
                 `;
               }).join('')}
-              <button 
-                class="drawer-overlay-btn ${isCropMarksActive ? 'active' : ''}" 
+              <button
+                type="button"
+                class="drawer-overlay-btn ${isCropMarksActive ? 'active' : ''}"
                 data-toggle="cropMarks"
                 aria-pressed="${isCropMarksActive}"
               >
                 <span class="indicator-dot" aria-hidden="true"></span>
-                <span>Crop Marks</span>
+                <span>Crop marks</span>
               </button>
             </div>
           </div>
@@ -367,16 +589,16 @@ export class SettingsDrawer {
           <!-- Line Weight Slider -->
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="slider-line-weight">Overlay Line Weight</label>
+              <label for="slider-line-weight">Overlay line weight</label>
               <span class="setting-value" id="val-line-weight">${ov.lineWeight.toFixed(1)}px</span>
             </div>
-            <input 
-              type="range" 
-              id="slider-line-weight" 
-              min="0.5" 
-              max="4.0" 
-              step="0.1" 
-              value="${ov.lineWeight}" 
+            <input
+              type="range"
+              id="slider-line-weight"
+              min="0.5"
+              max="4.0"
+              step="0.1"
+              value="${ov.lineWeight}"
               class="range-slider"
             />
           </div>
@@ -384,18 +606,18 @@ export class SettingsDrawer {
           <!-- Tracker Density Slider -->
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="slider-tracker-density">Tracker Density</label>
+              <label for="slider-tracker-density">Tracker density</label>
               <span class="setting-value" id="val-tracker-density">
-                ${ov.trackerDensity <= 0.3 ? 'SPARSE' : ov.trackerDensity >= 0.7 ? 'DENSE' : 'BALANCED'} (${ov.trackerDensity.toFixed(2)})
+                ${this.formatTrackerDensity(ov.trackerDensity)}
               </span>
             </div>
-            <input 
-              type="range" 
-              id="slider-tracker-density" 
-              min="0.1" 
-              max="1.0" 
-              step="0.05" 
-              value="${ov.trackerDensity}" 
+            <input
+              type="range"
+              id="slider-tracker-density"
+              min="0.1"
+              max="1.0"
+              step="0.05"
+              value="${ov.trackerDensity}"
               class="range-slider"
             />
           </div>
@@ -403,16 +625,16 @@ export class SettingsDrawer {
           <!-- Link Distance Threshold Slider -->
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="slider-link-distance">Link Distance Threshold</label>
+              <label for="slider-link-distance">Link distance threshold</label>
               <span class="setting-value" id="val-link-distance">${ov.linkDistanceThreshold.toFixed(3)}</span>
             </div>
-            <input 
-              type="range" 
-              id="slider-link-distance" 
-              min="0.01" 
-              max="0.15" 
-              step="0.005" 
-              value="${ov.linkDistanceThreshold}" 
+            <input
+              type="range"
+              id="slider-link-distance"
+              min="0.01"
+              max="0.15"
+              step="0.005"
+              value="${ov.linkDistanceThreshold}"
               class="range-slider"
             />
           </div>
@@ -420,16 +642,16 @@ export class SettingsDrawer {
           <!-- Scan Speed Slider -->
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="slider-scan-speed">Scan Plane Speed</label>
+              <label for="slider-scan-speed">Scan plane speed</label>
               <span class="setting-value" id="val-scan-speed">${ov.scanSpeed.toFixed(2)}x</span>
             </div>
-            <input 
-              type="range" 
-              id="slider-scan-speed" 
-              min="0.2" 
-              max="3.0" 
-              step="0.1" 
-              value="${ov.scanSpeed}" 
+            <input
+              type="range"
+              id="slider-scan-speed"
+              min="0.2"
+              max="3.0"
+              step="0.1"
+              value="${ov.scanSpeed}"
               class="range-slider"
             />
           </div>
@@ -437,28 +659,25 @@ export class SettingsDrawer {
           <!-- Trail Persistence / Fade Slider -->
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="slider-trail-fade">Trail Persistence (Fade)</label>
+              <label for="slider-trail-fade">Trail persistence</label>
               <span class="setting-value" id="val-trail-fade">${ov.trailFade.toFixed(2)}</span>
             </div>
-            <input 
-              type="range" 
-              id="slider-trail-fade" 
-              min="0.05" 
-              max="0.50" 
-              step="0.01" 
-              value="${ov.trailFade}" 
+            <input
+              type="range"
+              id="slider-trail-fade"
+              min="0.05"
+              max="0.50"
+              step="0.01"
+              value="${ov.trailFade}"
               class="range-slider"
             />
           </div>
-        </div>
 
-        <!-- Section: Debug Telemetry Toggle -->
-        <div class="settings-section">
-          <h3 class="section-title">Telemetry & Diagnostics</h3>
+          <!-- Debug Readout Toggle -->
           <div class="setting-item toggle-item">
             <div class="toggle-text">
-              <label for="toggle-debug-readout" class="toggle-label">Debug Readout HUD</label>
-              <span class="toggle-description">Compact bottom-left readout (FPS, Res, Pts, DPR, Provider)</span>
+              <label for="toggle-debug-readout" class="toggle-label">Debug readout HUD</label>
+              <span class="toggle-description">Compact readout (FPS, resolution, points, DPR, provider)</span>
             </div>
             <label class="switch">
               <input type="checkbox" id="toggle-debug-readout" ${s.debug ? 'checked' : ''} />
@@ -467,31 +686,31 @@ export class SettingsDrawer {
           </div>
         </div>
 
-        <!-- Section: About & Model Architecture -->
+        <!-- Section: About -->
         <div class="settings-section">
           <h3 class="section-title">About</h3>
-          
+
           <div class="about-card">
             <div class="about-card-header">
               <span class="about-model-name">Depth Anything V2 Small</span>
               <div class="depth-hud-pill depth-hud-${this.depthMode.toLowerCase()}">
                 <span class="depth-hud-dot" aria-hidden="true"></span>
-                <span class="depth-hud-mode">${this.depthMode}</span>
+                <span class="depth-hud-mode">${this.formatModeLabel()}</span>
                 <span class="depth-hud-divider" aria-hidden="true">/</span>
-                <span class="depth-hud-provider">${this.pipelineProvider}</span>
+                <span class="depth-hud-provider">${this.formatProviderLabel()}</span>
               </div>
             </div>
             <p class="about-desc">
-              State-of-the-art relative monocular depth estimation architecture quantized for web deployment via ONNX Runtime Web. Computes continuous depth geometry directly in your browser.
+              Relative monocular depth estimation quantized for web deployment via ONNX Runtime Web. Computes continuous depth geometry directly in your browser.
             </p>
             <div class="about-security-badge">
               <span class="security-dot" aria-hidden="true"></span>
-              <span>100% Client-Side. No telemetry or images leave your machine.</span>
+              <span>100% client-side. No telemetry or images leave your machine.</span>
             </div>
           </div>
 
           <div class="about-licenses">
-            <span class="about-licenses-title">Open Source Licenses</span>
+            <span class="about-licenses-title">Open-source licenses</span>
             <ul class="license-list">
               <li><strong>Drift Engine:</strong> MIT License</li>
               <li><strong>Depth Anything V2:</strong> Apache License 2.0</li>
@@ -499,13 +718,18 @@ export class SettingsDrawer {
               <li><strong>Three.js:</strong> MIT License</li>
             </ul>
           </div>
+
+          <button type="button" id="btn-open-credits" class="btn-drawer-action" title="View credits and full license text (C)">
+            ${ICONS.info}
+            <span>Credits &amp; licenses</span>
+          </button>
         </div>
 
         <!-- Section: Reset Actions -->
         <div class="settings-actions">
-          <button class="btn btn-secondary btn-reset-defaults" id="btn-reset-defaults">
+          <button type="button" class="btn btn-secondary btn-reset-defaults" id="btn-reset-defaults">
             ${ICONS.refresh}
-            <span>Reset to Defaults</span>
+            <span>Reset to defaults</span>
           </button>
         </div>
       </div>
@@ -518,12 +742,32 @@ export class SettingsDrawer {
     const closeBtn = this.container.querySelector('.drawer-close-btn');
     closeBtn?.addEventListener('click', () => this.close());
 
+    // Palette Segmented Buttons
+    const paletteBtns = this.container.querySelectorAll<HTMLButtonElement>('.palette-seg-btn');
+    paletteBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cm = btn.dataset.color as ColorMode | undefined;
+        if (!cm) return;
+        paletteBtns.forEach((b) => {
+          b.classList.toggle('active', b === btn);
+          b.setAttribute('aria-checked', b === btn ? 'true' : 'false');
+        });
+        this.settings.colorMode = cm;
+        const dockSwatch = document.querySelector<HTMLButtonElement>(`.palette-swatch-btn[data-color="${cm}"]`);
+        if (dockSwatch) {
+          dockSwatch.click();
+        } else {
+          this.options.onSettingsChange({ colorMode: cm });
+        }
+      });
+    });
+
     // Quality Preset Segmented Buttons
     const qualityBtns = this.container.querySelectorAll<HTMLButtonElement>('.quality-seg-btn');
     const qualityNote = this.container.querySelector('#quality-cost-note');
     qualityBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        const q = btn.dataset.quality as QualityLevel;
+        const q = btn.dataset.quality as QualityLevel | undefined;
         if (!q) return;
         qualityBtns.forEach((b) => {
           b.classList.toggle('active', b === btn);
@@ -577,12 +821,44 @@ export class SettingsDrawer {
       this.options.onSettingsChange({ depthScale: scale });
     });
 
+    // Softness (Drift Feather) Slider
+    const featherSlider = this.container.querySelector<HTMLInputElement>('#slider-drift-feather');
+    const featherVal = this.container.querySelector('#val-drift-feather');
+    featherSlider?.addEventListener('input', () => {
+      const feather = parseFloat(featherSlider.value);
+      this.driftFeather = feather;
+      if (featherVal) featherVal.textContent = `${Math.round(feather * 100)}%`;
+      const dockSlider = document.querySelector<HTMLInputElement>('#drift-softness-slider');
+      if (dockSlider) {
+        dockSlider.value = String(feather);
+        dockSlider.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+
     // Adaptive FPS Checkbox
     const fpsCheck = this.container.querySelector<HTMLInputElement>('#toggle-adaptive-fps');
     fpsCheck?.addEventListener('change', () => {
       const adaptive = fpsCheck.checked;
       this.settings.adaptiveFPS = adaptive;
       this.options.onSettingsChange({ adaptiveFPS: adaptive });
+    });
+
+    // Centre on subject Checkbox
+    const centerOnContentCheck = this.container.querySelector<HTMLInputElement>('#toggle-center-on-content');
+    centerOnContentCheck?.addEventListener('change', () => {
+      const center = centerOnContentCheck.checked;
+      this.settings.centerOnContent = center;
+      this.options.onSettingsChange({ centerOnContent: center });
+    });
+
+    // Reset View Button
+    const resetViewBtn = this.container.querySelector('#btn-reset-view');
+    resetViewBtn?.addEventListener('click', () => {
+      if (this.options.onZoomReset) {
+        this.options.onZoomReset();
+      } else {
+        document.querySelector<HTMLButtonElement>('.btn-zoom-reset')?.click();
+      }
     });
 
     // Debug Readout Toggle
@@ -679,8 +955,7 @@ export class SettingsDrawer {
     const tdVal = this.container.querySelector('#val-tracker-density');
     tdSlider?.addEventListener('input', () => {
       const td = parseFloat(tdSlider.value);
-      const desc = td <= 0.3 ? 'SPARSE' : td >= 0.7 ? 'DENSE' : 'BALANCED';
-      if (tdVal) tdVal.textContent = `${desc} (${td.toFixed(2)})`;
+      if (tdVal) tdVal.textContent = this.formatTrackerDensity(td);
       this.settings.overlays.trackerDensity = td;
       this.options.onSettingsChange({ overlays: { ...this.settings.overlays, trackerDensity: td } });
     });
@@ -715,9 +990,27 @@ export class SettingsDrawer {
       this.options.onSettingsChange({ overlays: { ...this.settings.overlays, trailFade: tf } });
     });
 
+    // Credits Button
+    const creditsBtn = this.container.querySelector('#btn-open-credits');
+    creditsBtn?.addEventListener('click', () => {
+      this.close();
+      if (this.options.onOpenCredits) {
+        this.options.onOpenCredits();
+      } else {
+        document.querySelector<HTMLButtonElement>('.btn-credits')?.click();
+      }
+    });
+
     // Reset Defaults
     const resetBtn = this.container.querySelector('#btn-reset-defaults');
     resetBtn?.addEventListener('click', () => {
+      this.driftFeather = 0.35;
+      const dockSlider = document.querySelector<HTMLInputElement>('#drift-softness-slider');
+      if (dockSlider) {
+        dockSlider.value = '0.35';
+        dockSlider.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      this.setSlider('#slider-drift-feather', '#val-drift-feather', 0.35, '35%');
       this.options.onResetDefaults();
     });
   }
